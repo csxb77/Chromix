@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Prepare native host tools only; the normal builder regenerates GN and links Chromium.
 set -euo pipefail
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="${1:?usage: prepare-restored-tools.sh WORKDIR linux|macos x64|arm64}"
 PLATFORM="${2:?platform is required}"
 ARCH="${3:?architecture is required}"
@@ -9,6 +8,7 @@ case "$PLATFORM:$ARCH" in linux:x64|linux:arm64|macos:x64|macos:arm64) ;; *) exi
 if [ "$PLATFORM" = macos ]; then
   unset -- "${!DYLD_@}"
 fi
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOST="$(uname -m)"
 case "$HOST" in x86_64) HOST=x64 ;; aarch64) HOST=arm64 ;; esac
 SYSTEM="$(uname -s)"

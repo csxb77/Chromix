@@ -979,6 +979,12 @@ import json, os, sys
 from pathlib import Path
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
+if name == "dirname":
+    assert not any(key.startswith("DYLD_") for key in os.environ)
+    with Path(os.environ["CALL_LOG"]).open("a") as stream:
+        stream.write(json.dumps([name, args, {}]) + "\n")
+    print(os.path.dirname(args[0]) or ".")
+    raise SystemExit(0)
 if name == "uname":
     assert not any(key.startswith("DYLD_") for key in os.environ)
     print(os.environ["MACHINE"] if args == ["-m"] else "Darwin")
@@ -1153,6 +1159,16 @@ class MacOSRuntimeShellTest(unittest.TestCase):
             'declare -x DYLD_INSERT_LIBRARIES="/poisoned"',
             'declare -x DYLD_UNKNOWN_OVERRIDE="/poisoned"'])
         self.assertEqual(self.env, before)
+
+    def test_scrubs_before_external_dirname_repository_lookup(self):
+        self.configure("arm64")
+        self.executable(self.bin / "dirname")
+        result = self.run_script("build/posix/prepare-restored-tools.sh", str(self.work), "macos", "arm64")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls()
+        self.assertEqual(calls[0][0], "dirname")
+        self.assertTrue(all(env == {} for _, _, env in calls))
+        self.assertEqual(self.object.stat().st_mtime_ns, self.before)
 
     def test_scrubs_before_inspect_and_finish_without_rebuilding_bindgen(self):
         self.configure("arm64")
