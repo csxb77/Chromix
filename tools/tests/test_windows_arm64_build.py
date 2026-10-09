@@ -123,7 +123,7 @@ function python {
         self.assertLess(guard, stage.index('$domainProgress ='))
         self.assertLess(guard, stage.index('tools\\restore_upstream_cache.py'))
         self.assertLess(guard, stage.index('& "$PSScriptRoot\\prepare-ungoogled.ps1"'))
-        self.assertIn('-RequireMarker:($FromArtifact -and $Arch -eq "arm64")', stage)
+        self.assertIn('-RequireMarker:(($FromArtifact -or $FromSynced) -and $Arch -eq "arm64")', stage)
         prepare = (WINDOWS / "prepare-ungoogled.ps1").read_text()
         self.assertLess(prepare.index('assert-target-arch.ps1'), prepare.index('$Python ='))
         self.assertIn('Assert-Arm64RustToolchain\n  if (-not $RestoredUpstream)', prepare)

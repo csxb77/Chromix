@@ -9,7 +9,9 @@
 param(
   [int]$StageIndex = 1,
   [int]$MaxStages = 12,
+  [ValidateRange(60, 300)] [int]$StageBudgetMinutes = 300,
   [switch]$FromArtifact,
+  [switch]$FromSynced,
   [switch]$UseUpstreamCache,
   [ValidatePattern('\A[0-9]*\z')] [string]$UpstreamRunId = "",
   [switch]$ValidateOnly,
@@ -35,6 +37,7 @@ $PartsDir = "C:\parts"
 $UpstreamCacheDir = "C:\u"
 # Standalone validation remains available; CI validates inside the first build job.
 $StageMinutes = if ($ValidateOnly) { 230 } else { 300 }
+if ($StageBudgetMinutes -ge 60) { $StageMinutes = [Math]::Min($StageMinutes, $StageBudgetMinutes) }
 $Deadline = (Get-Date).AddMinutes($StageMinutes)
 $PackReserveMin = if ($ValidateOnly) { 15 } else { 40 }
 
@@ -768,7 +771,7 @@ function Verify-FinalBundle {
 Write-Host "==> Chromix CI stage $StageIndex | Chromium $($Revisions.ChromiumVersion) | remaining $(Get-RemainingMin) min"
 Write-OutVar finished false
 Write-OutVar upload_parts false
-Write-OutVar snapshot_safe $(if ($env:CHROMIX_WINDOWS_VERIFY_SOURCE_REPO -or $env:CHROMIX_WINDOWS_VERIFY_SOURCE_SHA) { "false" } else { "true" })
+Write-OutVar snapshot_safe $(if ($FromSynced -or $env:CHROMIX_WINDOWS_VERIFY_SOURCE_REPO -or $env:CHROMIX_WINDOWS_VERIFY_SOURCE_SHA) { "false" } else { "true" })
 Assert-CiScripts
 Free-Disk
 Initialize-VisualStudio
@@ -788,8 +791,35 @@ $env:DEPOT_TOOLS_COLLECT_METRICS = "0"
 if ($FromArtifact -and -not (Test-Path "C:\restore\tree.7z.001")) {
   throw "resume artifact missing: C:\restore\tree.7z.001"
 }
-if (-not $FromArtifact -and $StageIndex -gt 1) {
-  throw "stage $StageIndex requires -FromArtifact"
+if ($FromSynced) {
+  if ($FromArtifact -or $StageIndex -ne 13 -or $Arch -cne 'arm64' -or
+      $BuildProfile -cne 'native' -or -not $RequireUpstreamCache -or $ValidateOnly -or
+      $env:CHROMIX_WINDOWS_MIGRATION_REPO -or $env:CHROMIX_WINDOWS_MIGRATION_SHA -or
+      $env:CHROMIX_WINDOWS_VERIFY_SOURCE_REPO -or $env:CHROMIX_WINDOWS_VERIFY_SOURCE_SHA) {
+    throw 'pre-restored resume requires native ARM64 stage13 with required upstream receipts and no alternate migration'
+  }
+  foreach ($relative in @('.chromix-target-arch', 'src\.chromix-upstream-restored.json',
+      'src\.chromix-restored-patches.json', 'src\.chromix-source-ready',
+      'src\.chromix-source-unpacked', 'src\out\Default\args.gn', 'src\out\Default\build.ninja')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $WorkDir $relative) -PathType Leaf)) {
+      throw "pre-restored ARM64 checkpoint missing $relative; refusing cold fallback"
+    }
+  }
+  if (Test-Path -LiteralPath (Join-Path $Src 'out\Chromix')) {
+    throw 'pre-restored ARM64 checkpoint contains cold output'
+  }
+  $migrationReceipt = Get-Content -LiteralPath (Join-Path $Src '.chromix-windows154-arm64-migration.json') -Raw | ConvertFrom-Json
+  if ($migrationReceipt.status -cne 'migrated' -or $migrationReceipt.arch -cne 'arm64' -or
+      $migrationReceipt.platform -cne 'windows' -or $migrationReceipt.version -cne '154.0.8037.97' -or
+      $migrationReceipt.previous_sha -cne '15a6425cfbd7a7ecd4a69ad206d0650778bf8253' -or
+      $migrationReceipt.donor_run_id -ne 37455471388 -or $migrationReceipt.donor_job_id -ne 113438156537 -or
+      $migrationReceipt.old_patch_count -ne 216 -or $migrationReceipt.patch_count -ne 224 -or
+      $env:GITHUB_SHA -cnotmatch '\A[0-9a-f]{40}\z' -or $migrationReceipt.target_sha -cne $env:GITHUB_SHA) {
+    throw 'pre-restored ARM64 migration receipt does not bind the exact donor and current target'
+  }
+}
+if (-not $FromArtifact -and -not $FromSynced -and $StageIndex -gt 1) {
+  throw "stage $StageIndex requires -FromArtifact or the guarded -FromSynced entry"
 }
 if ($FromArtifact) {
   $sevenZip = Resolve-7Zip
@@ -889,7 +919,7 @@ if ($env:CHROMIX_WINDOWS_MIGRATION_REPO -or $env:CHROMIX_WINDOWS_MIGRATION_SHA) 
 $InitializeTarget = $Arch -eq "arm64" -and ((Test-Path $Src) -or
   (-not $RequireUpstreamCache -and $env:CHROMIX_PREFER_UPSTREAM_CACHE -ne "1"))
 & "$PSScriptRoot\assert-target-arch.ps1" -WorkDir $WorkDir -Arch $Arch -Initialize:$InitializeTarget `
-  -RequireMarker:($FromArtifact -and $Arch -eq "arm64")
+  -RequireMarker:(($FromArtifact -or $FromSynced) -and $Arch -eq "arm64")
 
 $domainProgress = Join-Path $Src ".chromix-domain-substitution-in-progress"
 $domainMarker = Join-Path $Src ".chromix-domain-substituted"
@@ -1012,6 +1042,7 @@ try {
   }
   throw
 }
+if ($FromSynced) { Write-OutVar snapshot_safe true }
 $UngoogledTooling = Join-Path $WorkDir "tooling\ungoogled-chromium"
 $WindowsTooling = Join-Path $WorkDir "tooling\ungoogled-chromium-windows"
 if ($VerifyRestoredSource) {

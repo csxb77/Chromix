@@ -122,7 +122,7 @@ class WindowsUpstreamCacheRegressionTest(unittest.TestCase):
     def test_snapshot_outputs_fail_closed_but_keep_small_diagnostics(self):
         import yaml
 
-        self.assertIn('Write-OutVar snapshot_safe $(if ($env:CHROMIX_WINDOWS_VERIFY_SOURCE_REPO -or '
+        self.assertIn('Write-OutVar snapshot_safe $(if ($FromSynced -or $env:CHROMIX_WINDOWS_VERIFY_SOURCE_REPO -or '
                       '$env:CHROMIX_WINDOWS_VERIFY_SOURCE_SHA) { "false" } else { "true" })\nAssert-CiScripts', self.stage)
         tracked_start = self.stage.index("function Invoke-Tracked {")
         tracked_end = self.stage.index("function Get-FreeGB", tracked_start)

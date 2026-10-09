@@ -1,0 +1,668 @@
+name: build-win-arm64-stage12-migrate
+run-name: build-win-arm64-stage12-migrate
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: build-win-arm64-stage12-migrate-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CHROMIX_BUILD_PROFILE: native
+  CHROMIX_JOBS: auto
+  CHROMIX_USE_UPSTREAM_CACHE: '1'
+  CHROMIX_PREFER_UPSTREAM_CACHE: '0'
+  DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+  DEPOT_TOOLS_METRICS: '0'
+  DEPOT_TOOLS_COLLECT_METRICS: '0'
+  CHROMIX_TARGET_ARCH: arm64
+jobs:
+  build-13:
+    name: stage 13 (resume compile)
+    runs-on: windows-2022
+    timeout-minutes: 355
+    defaults:
+      run:
+        working-directory: target
+    outputs:
+      finished: ${{ steps.stage.outputs.finished }}
+      snapshot_attempt: ${{ steps.snapshot_origin.outputs.attempt }}
+    steps:
+    - name: Record snapshot producer attempt
+      id: snapshot_origin
+      shell: powershell
+      working-directory: ${{ github.workspace }}
+      run: |
+        Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "attempt=$env:GITHUB_RUN_ATTEMPT"
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "CHROMIX_MIGRATION_JOB_STARTED=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+    - uses: actions/checkout@v4
+      with:
+        path: target
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Validate exact stage12 metadata
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_ACTIONS_TOKEN || github.token }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        python tools/validate_windows154_arm64_checkpoint.py --repository "${{ github.repository }}" --metadata-report "$env:RUNNER_TEMP\windows-snapshot.json"
+        if ($LASTEXITCODE -ne 0) { throw 'exact stage12 metadata validation failed' }
+    - name: Checkout exact stage12 donor source read-only
+      uses: actions/checkout@v4
+      with:
+        repository: xiaozhou26/Chromix
+        ref: 15a6425cfbd7a7ecd4a69ad206d0650778bf8253
+        path: donor
+        fetch-depth: 0
+        persist-credentials: false
+        submodules: false
+    - name: Free host cache space before checkpoint download
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        foreach ($path in @('C:\Android', 'C:\Program Files\Android', 'C:\Program Files (x86)\Android', 'C:\ghcup', 'C:\Miniconda3', 'C:\ProgramData\chocolatey\cache')) {
+          if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    - name: Download exact stage12 snapshot volumes
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_ACTIONS_TOKEN || github.token }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # The validator emits a manifest pinned to the two exact stage-12 artifacts.
+        python tools/download_windows_snapshot.py --manifest "$env:RUNNER_TEMP\windows-snapshot.json" --destination 'C:\restore' --report "$env:RUNNER_TEMP\windows-snapshot-download.json"
+        if ($LASTEXITCODE -ne 0) { throw 'pinned Windows snapshot download failed' }
+    - name: Validate ARM64 snapshot markers and receipts
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        python tools/validate_windows154_arm64_checkpoint.py --snapshot 'C:\restore\tree.7z.001' --report "$env:RUNNER_TEMP\windows-arm64-snapshot-proof.json"
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 snapshot marker validation failed' }
+    - name: Preflight ARM64 host prerequisites
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe is unavailable' }
+        $installations = @(& $vswhere -latest -products * -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath)
+        $discoveryExit = $LASTEXITCODE
+        if ($discoveryExit -ne 0) { throw "VS2022 ARM64 discovery failed (vswhere exit $discoveryExit)" }
+        $installation = $installations | Select-Object -First 1
+        if (-not $installation) { throw 'ARM64 Visual Studio tools are unavailable' }
+        $pins = & build/windows/read-platform-pins.ps1 -Repo (Get-Location).Path
+        & build/windows/ensure-windows-sdk.ps1 -Arch arm64 -ChromiumVersion $pins.ChromiumVersion -DownloadDir $env:RUNNER_TEMP -Install
+        if ($LASTEXITCODE -ne 0) { throw 'pinned Windows SDK installation failed' }
+        & build/windows/assert-arm64-toolchain.ps1 -Installation $installation.Trim() -ChromiumVersion $pins.ChromiumVersion
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 host prerequisite preflight failed' }
+    - name: Restore verified checkpoint without cold fallback
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (Test-Path -LiteralPath 'C:\c') { throw 'checkpoint destination already exists' }
+        $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+        & $sevenZip t 'C:\restore\tree.7z.001' | Select-Object -Last 3
+        if ($LASTEXITCODE -ne 0) { throw 'checkpoint archive integrity test failed' }
+        & $sevenZip x 'C:\restore\tree.7z.001' '-oC:\c' -y | Select-Object -Last 3
+        if ($LASTEXITCODE -ne 0) { throw 'checkpoint extraction failed' }
+        Remove-Item -LiteralPath 'C:\restore' -Recurse -Force
+    - name: Migrate exact donor checkpoint to checked-out target source
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        git config --global core.longpaths true
+        python -X utf8 tools/migrate_windows154_arm64_snapshot.py --work-dir 'C:\c\chromix' --donor-repo "$env:GITHUB_WORKSPACE\donor" --target-repo "$env:GITHUB_WORKSPACE\target" --donor-sha 15a6425cfbd7a7ecd4a69ad206d0650778bf8253 --output "$env:RUNNER_TEMP\windows-arm64-migration.json"
+        if ($LASTEXITCODE -ne 0) { throw 'checkpoint migration failed; refusing preparation or compilation' }
+    - name: Upload recovery proof diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-arm64-stage13-migration-proof-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/windows-snapshot.json
+          ${{ runner.temp }}/windows-snapshot-download.json
+          ${{ runner.temp }}/windows-arm64-snapshot-proof.json
+          ${{ runner.temp }}/windows-arm64-migration.json
+        if-no-files-found: warn
+        retention-days: 7
+    - name: Select compile parallelism
+      shell: powershell
+      run: python tools/build_resources.py --github-env
+    - name: Run stage 13
+      id: stage
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $elapsed = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:CHROMIX_MIGRATION_JOB_STARTED) / 60
+        $budget = [Math]::Min(300, [Math]::Floor(325 - $elapsed))
+        if ($budget -lt 60) { throw 'insufficient checkpoint compile/snapshot budget after migration' }
+        build\windows\ci-stage.ps1 -StageIndex 13 -MaxStages 16 -FromSynced -UseUpstreamCache -Arch arm64 -StageBudgetMinutes $budget
+    - name: Upload restored reuse evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: upstream-reuse-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: |
+          C:\c\chromix\upstream-reuse\baseline.json
+          C:\c\chromix\upstream-reuse\result.json
+          C:\c\chromix\upstream-cache-preparation.json
+        if-no-files-found: ignore
+        retention-days: 3
+    - name: Ensure build tree snapshot
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.upload_parts != 'true' && steps.stage.outputs.finished != 'true' }}
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\c\chromix | Out-Null
+        . build\windows\ci-parts.ps1 -Root C:\c -PartsDir C:\parts -Mode Synced
+    - name: Upload tree part 1
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s13-attempt-${{ github.run_attempt }}-part1
+        path: C:\parts\p1\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 2
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s13-attempt-${{ github.run_attempt }}-part2
+        path: C:\parts\p2\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 3
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s13-attempt-${{ github.run_attempt }}-part3
+        path: C:\parts\p3\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 4
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s13-attempt-${{ github.run_attempt }}-part4
+        path: C:\parts\p4\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload fingerprint diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: fingerprint-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: C:\c\chromix\fingerprint-diagnostics\
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Upload final bundle
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64
+        path: |
+          C:\c\dist\chromix-win-arm64.zip
+          C:\c\dist\SHA256SUMS
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0
+    - name: Upload final source receipt
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromix-win-arm64-source-receipt
+        path: C:\c\dist\source-verification.json
+        if-no-files-found: error
+        retention-days: 7
+  build-14:
+    name: stage 14 (resume compile)
+    needs: build-13
+    if: ${{ always() && needs.build-13.result == 'success' && needs.build-13.outputs.finished != 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 355
+    outputs:
+      finished: ${{ steps.stage.outputs.finished }}
+      snapshot_attempt: ${{ steps.snapshot_origin.outputs.attempt }}
+    steps:
+    - name: Record snapshot producer attempt
+      id: snapshot_origin
+      shell: powershell
+      run: Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "attempt=$env:GITHUB_RUN_ATTEMPT"
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Download this run's previous checkpoint
+      uses: actions/download-artifact@v4
+      with:
+        pattern: win-arm64-tree-s13-attempt-${{ needs.build-13.outputs.snapshot_attempt }}-part*
+        merge-multiple: true
+        path: C:\restore
+    - name: Preflight ARM64 host prerequisites
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe is unavailable' }
+        $installations = @(& $vswhere -latest -products * -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath)
+        $discoveryExit = $LASTEXITCODE
+        if ($discoveryExit -ne 0) { throw "VS2022 ARM64 discovery failed (vswhere exit $discoveryExit)" }
+        $installation = $installations | Select-Object -First 1
+        if (-not $installation) { throw 'ARM64 Visual Studio tools are unavailable' }
+        $pins = & build/windows/read-platform-pins.ps1 -Repo (Get-Location).Path
+        & build/windows/ensure-windows-sdk.ps1 -Arch arm64 -ChromiumVersion $pins.ChromiumVersion -DownloadDir $env:RUNNER_TEMP -Install
+        if ($LASTEXITCODE -ne 0) { throw 'pinned Windows SDK installation failed' }
+        & build/windows/assert-arm64-toolchain.ps1 -Installation $installation.Trim() -ChromiumVersion $pins.ChromiumVersion
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 host prerequisite preflight failed' }
+    - name: Select compile parallelism
+      shell: powershell
+      run: python tools/build_resources.py --github-env
+    - name: Run stage 14
+      id: stage
+      shell: powershell
+      run: build\windows\ci-stage.ps1 -StageIndex 14 -MaxStages 16 -FromArtifact -UseUpstreamCache -Arch arm64
+    - name: Upload restored reuse evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: upstream-reuse-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: |
+          C:\c\chromix\upstream-reuse\baseline.json
+          C:\c\chromix\upstream-reuse\result.json
+          C:\c\chromix\upstream-cache-preparation.json
+        if-no-files-found: ignore
+        retention-days: 3
+    - name: Ensure build tree snapshot
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.upload_parts != 'true' && steps.stage.outputs.finished != 'true' }}
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\c\chromix | Out-Null
+        . build\windows\ci-parts.ps1 -Root C:\c -PartsDir C:\parts -Mode Synced
+    - name: Upload tree part 1
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s14-attempt-${{ github.run_attempt }}-part1
+        path: C:\parts\p1\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 2
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s14-attempt-${{ github.run_attempt }}-part2
+        path: C:\parts\p2\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 3
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s14-attempt-${{ github.run_attempt }}-part3
+        path: C:\parts\p3\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 4
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s14-attempt-${{ github.run_attempt }}-part4
+        path: C:\parts\p4\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload fingerprint diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: fingerprint-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: C:\c\chromix\fingerprint-diagnostics\
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Upload final bundle
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64
+        path: |
+          C:\c\dist\chromix-win-arm64.zip
+          C:\c\dist\SHA256SUMS
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0
+    - name: Upload final source receipt
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromix-win-arm64-source-receipt
+        path: C:\c\dist\source-verification.json
+        if-no-files-found: error
+        retention-days: 7
+  build-15:
+    name: stage 15 (resume compile)
+    needs: build-14
+    if: ${{ always() && needs.build-14.result == 'success' && needs.build-14.outputs.finished != 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 355
+    outputs:
+      finished: ${{ steps.stage.outputs.finished }}
+      snapshot_attempt: ${{ steps.snapshot_origin.outputs.attempt }}
+    steps:
+    - name: Record snapshot producer attempt
+      id: snapshot_origin
+      shell: powershell
+      run: Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "attempt=$env:GITHUB_RUN_ATTEMPT"
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Download this run's previous checkpoint
+      uses: actions/download-artifact@v4
+      with:
+        pattern: win-arm64-tree-s14-attempt-${{ needs.build-14.outputs.snapshot_attempt }}-part*
+        merge-multiple: true
+        path: C:\restore
+    - name: Preflight ARM64 host prerequisites
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe is unavailable' }
+        $installations = @(& $vswhere -latest -products * -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath)
+        $discoveryExit = $LASTEXITCODE
+        if ($discoveryExit -ne 0) { throw "VS2022 ARM64 discovery failed (vswhere exit $discoveryExit)" }
+        $installation = $installations | Select-Object -First 1
+        if (-not $installation) { throw 'ARM64 Visual Studio tools are unavailable' }
+        $pins = & build/windows/read-platform-pins.ps1 -Repo (Get-Location).Path
+        & build/windows/ensure-windows-sdk.ps1 -Arch arm64 -ChromiumVersion $pins.ChromiumVersion -DownloadDir $env:RUNNER_TEMP -Install
+        if ($LASTEXITCODE -ne 0) { throw 'pinned Windows SDK installation failed' }
+        & build/windows/assert-arm64-toolchain.ps1 -Installation $installation.Trim() -ChromiumVersion $pins.ChromiumVersion
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 host prerequisite preflight failed' }
+    - name: Select compile parallelism
+      shell: powershell
+      run: python tools/build_resources.py --github-env
+    - name: Run stage 15
+      id: stage
+      shell: powershell
+      run: build\windows\ci-stage.ps1 -StageIndex 15 -MaxStages 16 -FromArtifact -UseUpstreamCache -Arch arm64
+    - name: Upload restored reuse evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: upstream-reuse-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: |
+          C:\c\chromix\upstream-reuse\baseline.json
+          C:\c\chromix\upstream-reuse\result.json
+          C:\c\chromix\upstream-cache-preparation.json
+        if-no-files-found: ignore
+        retention-days: 3
+    - name: Ensure build tree snapshot
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.upload_parts != 'true' && steps.stage.outputs.finished != 'true' }}
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\c\chromix | Out-Null
+        . build\windows\ci-parts.ps1 -Root C:\c -PartsDir C:\parts -Mode Synced
+    - name: Upload tree part 1
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s15-attempt-${{ github.run_attempt }}-part1
+        path: C:\parts\p1\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 2
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s15-attempt-${{ github.run_attempt }}-part2
+        path: C:\parts\p2\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 3
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s15-attempt-${{ github.run_attempt }}-part3
+        path: C:\parts\p3\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 4
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s15-attempt-${{ github.run_attempt }}-part4
+        path: C:\parts\p4\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload fingerprint diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: fingerprint-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: C:\c\chromix\fingerprint-diagnostics\
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Upload final bundle
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64
+        path: |
+          C:\c\dist\chromix-win-arm64.zip
+          C:\c\dist\SHA256SUMS
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0
+    - name: Upload final source receipt
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromix-win-arm64-source-receipt
+        path: C:\c\dist\source-verification.json
+        if-no-files-found: error
+        retention-days: 7
+  build-16:
+    name: stage 16 (resume compile)
+    needs: build-15
+    if: ${{ always() && needs.build-15.result == 'success' && needs.build-15.outputs.finished != 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 355
+    outputs:
+      finished: ${{ steps.stage.outputs.finished }}
+      snapshot_attempt: ${{ steps.snapshot_origin.outputs.attempt }}
+    steps:
+    - name: Record snapshot producer attempt
+      id: snapshot_origin
+      shell: powershell
+      run: Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "attempt=$env:GITHUB_RUN_ATTEMPT"
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Download this run's previous checkpoint
+      uses: actions/download-artifact@v4
+      with:
+        pattern: win-arm64-tree-s15-attempt-${{ needs.build-15.outputs.snapshot_attempt }}-part*
+        merge-multiple: true
+        path: C:\restore
+    - name: Preflight ARM64 host prerequisites
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe is unavailable' }
+        $installations = @(& $vswhere -latest -products * -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath)
+        $discoveryExit = $LASTEXITCODE
+        if ($discoveryExit -ne 0) { throw "VS2022 ARM64 discovery failed (vswhere exit $discoveryExit)" }
+        $installation = $installations | Select-Object -First 1
+        if (-not $installation) { throw 'ARM64 Visual Studio tools are unavailable' }
+        $pins = & build/windows/read-platform-pins.ps1 -Repo (Get-Location).Path
+        & build/windows/ensure-windows-sdk.ps1 -Arch arm64 -ChromiumVersion $pins.ChromiumVersion -DownloadDir $env:RUNNER_TEMP -Install
+        if ($LASTEXITCODE -ne 0) { throw 'pinned Windows SDK installation failed' }
+        & build/windows/assert-arm64-toolchain.ps1 -Installation $installation.Trim() -ChromiumVersion $pins.ChromiumVersion
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 host prerequisite preflight failed' }
+    - name: Select compile parallelism
+      shell: powershell
+      run: python tools/build_resources.py --github-env
+    - name: Run stage 16
+      id: stage
+      shell: powershell
+      run: build\windows\ci-stage.ps1 -StageIndex 16 -MaxStages 16 -FromArtifact -UseUpstreamCache -Arch arm64
+    - name: Upload restored reuse evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: upstream-reuse-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: |
+          C:\c\chromix\upstream-reuse\baseline.json
+          C:\c\chromix\upstream-reuse\result.json
+          C:\c\chromix\upstream-cache-preparation.json
+        if-no-files-found: ignore
+        retention-days: 3
+    - name: Ensure build tree snapshot
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.upload_parts != 'true' && steps.stage.outputs.finished != 'true' }}
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\c\chromix | Out-Null
+        . build\windows\ci-parts.ps1 -Root C:\c -PartsDir C:\parts -Mode Synced
+    - name: Upload tree part 1
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s16-attempt-${{ github.run_attempt }}-part1
+        path: C:\parts\p1\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 2
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s16-attempt-${{ github.run_attempt }}-part2
+        path: C:\parts\p2\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 3
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s16-attempt-${{ github.run_attempt }}-part3
+        path: C:\parts\p3\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload tree part 4
+      if: ${{ always() && steps.stage.outputs.snapshot_safe == 'true' && steps.stage.outputs.finished != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64-tree-s16-attempt-${{ github.run_attempt }}-part4
+        path: C:\parts\p4\*
+        if-no-files-found: warn
+        retention-days: 3
+        compression-level: 0
+    - name: Upload fingerprint diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: fingerprint-win-arm64-${{ github.job }}-attempt-${{ github.run_attempt }}
+        path: C:\c\chromix\fingerprint-diagnostics\
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Upload final bundle
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: win-arm64
+        path: |
+          C:\c\dist\chromix-win-arm64.zip
+          C:\c\dist\SHA256SUMS
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0
+    - name: Upload final source receipt
+      if: steps.stage.outputs.finished == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromix-win-arm64-source-receipt
+        path: C:\c\dist\source-verification.json
+        if-no-files-found: error
+        retention-days: 7
+  complete:
+    name: ensure build finished
+    needs: [build-13, build-14, build-15, build-16]
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() }}
+    steps:
+    - name: Assert a migrated stage finished
+      env:
+        FINISHED: ${{ needs.build-13.outputs.finished == 'true' || needs.build-14.outputs.finished == 'true' || needs.build-15.outputs.finished == 'true' || needs.build-16.outputs.finished == 'true' }}
+      run: |
+        if [ "$FINISHED" = "true" ]; then
+          echo 'Migrated ARM64 build finished; bundle and source receipt uploaded.'
+        else
+          echo 'Build did not finish within stages 13-16; retain the last safe checkpoint.'
+          exit 1
+        fi
+  verify-arm64:
+    name: native Windows ARM64 bundle and fingerprint verification
+    needs: complete
+    if: ${{ !cancelled() && needs.complete.result == 'success' }}
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+        architecture: x64
+    - name: Download this run's compiled ARM64 bundle
+      uses: actions/download-artifact@v4
+      with:
+        name: win-arm64
+        path: dist
+    - name: Download this run's source receipt
+      uses: actions/download-artifact@v4
+      with:
+        name: chromix-win-arm64-source-receipt
+        path: source-receipt
+    - name: Verify checksum, PE architecture, version and native headless exit
+      shell: pwsh
+      timeout-minutes: 5
+      run: |
+        python tools/verify_windows_bundle.py --archive dist/chromix-win-arm64.zip --sha256-file dist/SHA256SUMS --dest smoke --arch arm64 --native --report diagnostics/native-smoke.json
+        if ($LASTEXITCODE -ne 0) { throw 'native ARM64 bundle verification failed' }
+    - name: Install fingerprint verification dependencies
+      shell: pwsh
+      timeout-minutes: 10
+      run: |
+        python -m pip install --disable-pip-version-check --timeout 30 --retries 1 -r tools/fingerprint-requirements.txt
+        if ($LASTEXITCODE -ne 0) { throw 'fingerprint dependency installation failed' }
+    - name: Verify native ARM64 fingerprint behavior
+      shell: pwsh
+      timeout-minutes: 40
+      run: |
+        $browser = (Resolve-Path smoke/chromix/chrome.exe).Path
+        $hash = (Get-FileHash -LiteralPath $browser -Algorithm SHA256).Hash.ToLowerInvariant()
+        $pins = & build/windows/read-platform-pins.ps1 -Repo (Get-Location).Path
+        $version = $pins.ChromiumVersion
+        python -X utf8 tools/fingerprint_acceptance.py --browser $browser --expected-sha256 $hash --expected-version $version --source-report source-receipt/source-verification.json --output-dir diagnostics/fingerprint
+        if ($LASTEXITCODE -ne 0) { throw 'native ARM64 fingerprint acceptance failed' }
+    - name: Upload native verification diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: native-win-arm64-attempt-${{ github.run_attempt }}
+        path: diagnostics/
+        if-no-files-found: warn
+        retention-days: 7
+'on':
+  workflow_dispatch: {}
