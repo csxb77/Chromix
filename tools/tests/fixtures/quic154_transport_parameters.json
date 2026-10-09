@@ -1,0 +1,39 @@
+[
+  {
+    "message_sha256": "afa28853aa38ddc87c0117a1102b2bb54dcc48cc9403299ca97b1e28f66a0b63",
+    "parameters": [
+      {"id": 32, "length": 4, "name": "max_datagram_frame_size", "value": 65536},
+      {"id": 2418123909564973662, "length": 5, "grease": true},
+      {"id": 5, "length": 4, "name": "initial_max_stream_data_bidi_local", "value": 6291456},
+      {"id": 15, "length": 0, "name": "initial_source_connection_id", "opaque": true},
+      {"id": 17, "length": 12, "name": "version_information", "versions": [1, 1, 181033514]},
+      {"id": 1, "length": 4, "name": "max_idle_timeout", "value": 30000},
+      {"id": 12584, "length": 4, "value_sha256": "47a31c03648b46c1cd07fb928781a9586d3bf66c65dafc87c207c63844688bc3"},
+      {"id": 9, "length": 2, "name": "initial_max_streams_uni", "value": 103},
+      {"id": 7, "length": 4, "name": "initial_max_stream_data_uni", "value": 6291456},
+      {"id": 3, "length": 2, "name": "max_udp_payload_size", "value": 1472},
+      {"id": 6, "length": 4, "name": "initial_max_stream_data_bidi_remote", "value": 6291456},
+      {"id": 8, "length": 2, "name": "initial_max_streams_bidi", "value": 100},
+      {"id": 4, "length": 4, "name": "initial_max_data", "value": 15728640}
+    ]
+  },
+  {
+    "message_sha256": "8a562da236e2bfe5ebbf778d8bfa7c198f5803a03169a59969c30a6bd4a54d74",
+    "parameters": [
+      {"id": 12583, "length": 4, "value_sha256": "a8b01a4173cd9a0d2165087764f5eba811d32b70822bbd1b69bf5a15eb55b775"},
+      {"id": 5, "length": 4, "name": "initial_max_stream_data_bidi_local", "value": 6291456},
+      {"id": 523977375680180095, "length": 9, "grease": true},
+      {"id": 6, "length": 4, "name": "initial_max_stream_data_bidi_remote", "value": 6291456},
+      {"id": 8, "length": 2, "name": "initial_max_streams_bidi", "value": 100},
+      {"id": 7, "length": 4, "name": "initial_max_stream_data_uni", "value": 6291456},
+      {"id": 17, "length": 12, "name": "version_information", "versions": [1, 1, 1779100330]},
+      {"id": 1, "length": 4, "name": "max_idle_timeout", "value": 30000},
+      {"id": 15, "length": 0, "name": "initial_source_connection_id", "opaque": true},
+      {"id": 9, "length": 2, "name": "initial_max_streams_uni", "value": 103},
+      {"id": 12584, "length": 4, "value_sha256": "47a31c03648b46c1cd07fb928781a9586d3bf66c65dafc87c207c63844688bc3"},
+      {"id": 3, "length": 2, "name": "max_udp_payload_size", "value": 1472},
+      {"id": 32, "length": 4, "name": "max_datagram_frame_size", "value": 65536},
+      {"id": 4, "length": 4, "name": "initial_max_data", "value": 15728640}
+    ]
+  }
+]

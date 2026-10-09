@@ -22,12 +22,15 @@ import threading
 from fingerprint_transport_audit import certificate, HINTS, IDENTITY, launch, header_errors
 
 DRIVER_VERSION = '1.2.0'
+# Chromium 154.0.8037.97 pins QUICHE 80bf9559d3a4c08dde4b85abc46d190a88ffef64:
+# quiche/quic/core/crypto/transport_parameters.{h,cc}: optional RTT estimate, in us.
+INITIAL_ROUND_TRIP_TIME = 0x3127
 INTEGER_PARAMETERS = {
     1: 'max_idle_timeout', 3: 'max_udp_payload_size', 4: 'initial_max_data',
     5: 'initial_max_stream_data_bidi_local', 6: 'initial_max_stream_data_bidi_remote',
     7: 'initial_max_stream_data_uni', 8: 'initial_max_streams_bidi', 9: 'initial_max_streams_uni',
     10: 'ack_delay_exponent', 11: 'max_ack_delay', 14: 'active_connection_id_limit',
-    32: 'max_datagram_frame_size',
+    32: 'max_datagram_frame_size', INITIAL_ROUND_TRIP_TIME: 'initial_round_trip_time_us',
 }
 OPAQUE_PARAMETERS = {0: 'original_destination_connection_id', 2: 'stateless_reset_token',
                      13: 'preferred_address', 15: 'initial_source_connection_id',
@@ -63,6 +66,8 @@ def parse_transport_parameters(data):
             if end != length:
                 raise ValueError('invalid QUIC integer parameter length')
             entry.update(name=INTEGER_PARAMETERS[key], value=value)
+            if key == INITIAL_ROUND_TRIP_TIME:
+                entry['evidence_class'] = 'dynamic_network_estimate'
         elif key == 12:
             if length:
                 raise ValueError('disable_active_migration must have an empty value')
@@ -108,10 +113,24 @@ def canonical_parameters(observed):
             grease_count = len(versions) - 1 - len(available)
             result.append([key, [versions[0], *available, *([0x0a0a0a0a] * grease_count)]])
         elif key in INTEGER_PARAMETERS:
+            if key == INITIAL_ROUND_TRIP_TIME:
+                if set(row) == {'id', 'length', 'value_sha256'}:
+                    # Historical hashes cannot recover a value or verify its wire encoding.
+                    digest = row['value_sha256']
+                    if (length not in (1, 2, 4, 8) or not isinstance(digest, str) or
+                            not re.fullmatch('[0-9a-f]{64}', digest)):
+                        raise ValueError('invalid historical RTT parameter evidence')
+                    continue
+                if (row.get('name') != INTEGER_PARAMETERS[key] or
+                        row.get('evidence_class') != 'dynamic_network_estimate' or
+                        set(row) != {'id', 'length', 'name', 'value', 'evidence_class'}):
+                    raise ValueError('invalid dynamic RTT parameter evidence')
             value = row['value']
-            if type(value) is not int or not 0 <= value < 2**62 or length not in (1, 2, 4, 8):
+            if (type(value) is not int or length not in (1, 2, 4, 8) or
+                    not 0 <= value < 1 << (length * 8 - 2)):
                 raise ValueError('invalid QUIC integer parameter evidence')
-            result.append([key, value])
+            if key != INITIAL_ROUND_TRIP_TIME:
+                result.append([key, value])
         elif key == 12:
             if row.get('value') is not True or length != 0:
                 raise ValueError('invalid QUIC migration flag evidence')
@@ -327,7 +346,12 @@ def run(browser, headed=False):
               'route': 'forced-owned-loopback', 'driver': {'aioquic': DRIVER_VERSION},
               'qualification': {'proxy': 'not_tested', 'dns': 'not_tested', 'physical_network': 'not_attested',
                   'alt_svc_discovery': 'not_tested', 'migration': 'not_tested', 'zero_rtt': 'not_tested',
-                  'unknown_parameters': 'length and payload hash only', 'ticket_contents': 'not_recorded'}}
+                  'unknown_parameters': 'length and payload hash only', 'ticket_contents': 'not_recorded',
+                  'initial_round_trip_time_us': {
+                      'id': INITIAL_ROUND_TRIP_TIME, 'evidence_class': 'dynamic_network_estimate',
+                      'comparison': 'validated presence, value and encoded length excluded from fixed identity',
+                      'sampling': 'per-connection estimate in microseconds; optional; not a fixed identity or network attestation',
+                      'historical': 'opaque historical digest-only rows retained; value and wire encoding not recoverable'}}}
     try:
         from playwright.sync_api import sync_playwright
         with tempfile.TemporaryDirectory(prefix='chromix-quic-') as directory:

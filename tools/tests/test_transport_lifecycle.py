@@ -1,6 +1,6 @@
-"""Invented report mutation tests and real owned TLS/H3 server/client tests.
+"""Report mutations, derived native QUIC parameters and owned TLS/H3 client tests.
 
-The clients here are Python/OpenSSL and aioquic, never native-browser acceptance.
+The live clients are Python/OpenSSL and aioquic, never native-browser acceptance.
 """
 import asyncio
 from contextlib import nullcontext
@@ -368,6 +368,171 @@ def test_quic_parameters_decode_unknowns_without_cid_or_token_bytes():
     grease.update(id=27 + 31 * 72, length=23)
     assert quic.canonical_parameters(value) == quic.canonical_parameters(other)
     assert not quic.assess(quic_report())
+
+
+def quic_rtt_report(payload):
+    report = quic_report()
+    block = transport_parameters() + encode_varint(0x3127) + encode_varint(len(payload)) + payload
+    report['connections'][0]['transport_parameters'] = quic.parse_transport_parameters(block)
+    return report
+
+
+@pytest.mark.parametrize('length', [1, 2, 4, 8])
+@pytest.mark.parametrize('boundary', [False, True])
+def test_quic_dynamic_rtt_value_length_and_presence_preserve_raw_evidence(length, boundary):
+    value = (1 << (length * 8 - 2)) - 1 if boundary else 0
+    payload = (({1: 0, 2: 1, 4: 2, 8: 3}[length] << (length * 8 - 2)) | value).to_bytes(length, 'big')
+    report = quic_rtt_report(payload)
+    original = deepcopy(report)
+    observed = report['connections'][0]['transport_parameters']
+    assert observed['parameters'][-1] == {'id': 12583, 'length': length,
+        'name': 'initial_round_trip_time_us', 'value': value, 'evidence_class': 'dynamic_network_estimate'}
+    assert quic.assess(report) == []
+    assert report == original
+    other = quic_rtt_report(encode_varint(30000))['connections'][0]['transport_parameters']
+    assert observed['message_sha256'] != other['message_sha256']
+    assert quic.canonical_parameters(observed) == quic.canonical_parameters(other)
+
+
+def test_quic154_derived_historical_rtt_is_opaque_and_optional():
+    # Derived from chromix-arm64-native-failure/fingerprint/quic.json, first two
+    # parameter observations only; no headers, addresses or inferred RTT values.
+    observations = json.loads((Path(__file__).parent / 'fixtures' / 'quic154_transport_parameters.json').read_text())
+    report = quic_report()
+    for connection, observed in zip(report['connections'], observations):
+        connection['transport_parameters'] = observed
+    original = deepcopy(report)
+    assert not any(row['id'] == 12583 for row in observations[0]['parameters'])
+    historical = next(row for row in observations[1]['parameters'] if row['id'] == 12583)
+    assert historical == {'id': 12583, 'length': 4,
+        'value_sha256': 'a8b01a4173cd9a0d2165087764f5eba811d32b70822bbd1b69bf5a15eb55b775'}
+    assert quic.assess(report) == []
+    assert report == original
+
+
+@pytest.mark.parametrize('length', [1, 2, 4, 8])
+def test_quic_historical_rtt_digest_changes_do_not_invent_a_value(length):
+    report = quic_report()
+    for index, connection in enumerate(report['connections']):
+        connection['transport_parameters']['parameters'].append(
+            {'id': 12583, 'length': length, 'value_sha256': str(index) * 64})
+    original = deepcopy(report)
+    assert quic.assess(report) == []
+    assert report == original
+
+
+@pytest.mark.parametrize('payload', [b'', b'\x40', b'\x80\0', b'\xc0\0\0\0',
+    b'\0\0', b'\x40\0\0\0', b'\xc0' + b'\0' * 8, b'x' * 65537])
+def test_quic_malformed_rtt_wire_is_not_excluded(payload):
+    with pytest.raises(ValueError):
+        quic_rtt_report(payload)
+
+
+def test_quic_duplicate_rtt_and_parameter_count_overflow_fail():
+    rtt = encode_varint(0x3127) + b'\x01\0'
+    with pytest.raises(ValueError, match='duplicate'):
+        quic.parse_transport_parameters(transport_parameters() + rtt + rtt)
+    block = b''.join(encode_varint(key) + b'\0' for key in range(1000, 1256)) + rtt
+    with pytest.raises(ValueError, match='oversized'):
+        quic.parse_transport_parameters(block)
+
+
+@pytest.mark.parametrize('mutate', [
+    lambda row: row.update(value=True),
+    lambda row: row.update(value=-1),
+    lambda row: row.update(value=2**62),
+    lambda row: row.update(value=2**14),
+    lambda row: row.update(value='100'),
+    lambda row: row.update(length=1),
+    lambda row: row.update(length=3),
+    lambda row: row.update(length=65537),
+    lambda row: row.update(length=True),
+    lambda row: row.update(name='untrusted'),
+    lambda row: row.update(evidence_class='unknown'),
+    lambda row: row.update(value_sha256='a' * 64),
+    lambda row: row.update(opaque=True),
+    lambda row: row.pop('value'),
+    lambda row: row.pop('name'),
+])
+def test_quic_invalid_decoded_rtt_evidence_is_not_excluded(mutate):
+    report = quic_rtt_report(encode_varint(100))
+    mutate(report['connections'][0]['transport_parameters']['parameters'][-1])
+    assert quic.assess(report)
+
+
+@pytest.mark.parametrize('mutate', [
+    lambda row: row.update(length=0),
+    lambda row: row.update(length=3),
+    lambda row: row.update(length=65537),
+    lambda row: row.update(length=True),
+    lambda row: row.update(value_sha256='a' * 63),
+    lambda row: row.update(value_sha256='G' * 64),
+    lambda row: row.update(value_sha256=None),
+    lambda row: row.update(value=1),
+    lambda row: row.update(name='initial_round_trip_time_us'),
+    lambda row: row.update(id='12583'),
+    lambda row: row.update(id=12583.0),
+    lambda row: row.pop('value_sha256'),
+])
+def test_quic_invalid_historical_rtt_evidence_is_not_excluded(mutate):
+    report = quic_report()
+    row = {'id': 12583, 'length': 4, 'value_sha256': 'a' * 64}
+    report['connections'][0]['transport_parameters']['parameters'].append(row)
+    mutate(row)
+    assert quic.assess(report)
+
+
+@pytest.mark.parametrize('historical', [False, True])
+def test_quic_duplicate_rtt_evidence_fails(historical):
+    report = quic_rtt_report(encode_varint(100))
+    rows = report['connections'][0]['transport_parameters']['parameters']
+    rows.append({'id': 12583, 'length': 4, 'value_sha256': 'a' * 64} if historical else deepcopy(rows[-1]))
+    assert quic.assess(report)
+
+
+@pytest.mark.parametrize('key', [4, 5, 6, 7, 8, 9, 12584])
+@pytest.mark.parametrize('change', ['value', 'length', 'presence'])
+def test_quic154_other_parameters_stay_strict(key, change):
+    observations = json.loads((Path(__file__).parent / 'fixtures' / 'quic154_transport_parameters.json').read_text())
+    report = quic_report()
+    for connection, observed in zip(report['connections'], observations):
+        connection['transport_parameters'] = observed
+    rows = observations[1]['parameters']
+    row = next(row for row in rows if row['id'] == key)
+    if change == 'presence':
+        rows.remove(row)
+    elif change == 'length':
+        row['length'] = 5 if key == 12584 else 1
+    elif key == 12584:
+        row.update(value_sha256='a' * 64, name='initial_round_trip_time_us', evidence_class='dynamic_network_estimate')
+    else:
+        row['value'] += 1
+    assert quic.assess(report)
+
+
+def test_quic_collector_retains_rtt_and_qualifies_dynamic_sampling(monkeypatch, tmp_path):
+    fixture = quic_rtt_report(encode_varint(30000))
+    runs = iter(fixture['runs'])
+    def context(**kwargs):
+        run = next(runs)
+        values = iter([run['identity'], run['reuse'], 'h3'])
+        page = SimpleNamespace(goto=lambda *args, **kwargs: None, evaluate=lambda *args: next(values))
+        return SimpleNamespace(new_page=lambda: page, close=lambda: None)
+    browser = SimpleNamespace(version='154.0.8037.97', new_context=context, close=lambda: None)
+    pw = SimpleNamespace(chromium=SimpleNamespace(launch=lambda **kwargs: browser))
+    server = {'connections': fixture['connections'], 'errors': [], 'spki': 'fixture'}
+    monkeypatch.setitem(sys.modules, 'playwright.sync_api', SimpleNamespace(sync_playwright=lambda: nullcontext(pw)))
+    monkeypatch.setattr(quic, 'endpoint', lambda *args: nullcontext((server, 'https://localhost:1234')))
+    monkeypatch.setattr(quic.launch.pool, 'file_hash', lambda _: 'a' * 64)
+    report = quic.run(tmp_path / 'browser')
+    assert report['status'] == 'passed' and report['errors'] == []
+    assert report['connections'] == fixture['connections']
+    qualification = report['qualification']['initial_round_trip_time_us']
+    assert qualification['id'] == 12583
+    assert qualification['evidence_class'] == 'dynamic_network_estimate'
+    assert 'optional' in qualification['sampling'] and 'microseconds' in qualification['sampling']
+    assert 'opaque historical' in qualification['historical']
+    assert 'not recoverable' in qualification['historical']
 
 
 def quic_version_report(versions):
