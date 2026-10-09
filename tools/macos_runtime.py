@@ -44,6 +44,53 @@ BINDGEN_SCOPED_ENV = b'''    env = os.environ.copy()
 '''
 
 
+BINDGEN_154_ORIGINAL_SHA256 = "0312746c2a16abbd36afa99ae00be9a04c616967bca1f1b14306e057a622cf59"
+BINDGEN_154_PATCHED_SHA256 = "732ed60ade9b832c1fd99c46e510509420fa8ec9279af8060b10301d1c7e324a"
+BINDGEN_154_ORIGINAL_ENV = b'''        env = os.environ
+        if args.ld_library_path:
+            if sys.platform == 'darwin':
+                env["DYLD_LIBRARY_PATH"] = args.ld_library_path
+'''
+BINDGEN_154_SCOPED_ENV = b'''        env = os.environ.copy()
+        if sys.platform == 'darwin':
+            env = {key: value for key, value in env.items()
+                   if not key.startswith('DYLD_')}
+        if args.ld_library_path:
+            if sys.platform == 'darwin':
+                # Expose libclang without overriding the system C++ runtime.
+                library_path = stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix='chromix-bindgen-'))
+                os.symlink(os.path.realpath(os.path.join(args.ld_library_path,
+                                                        'libclang.dylib')),
+                           os.path.join(library_path, 'libclang.dylib'))
+                env["DYLD_LIBRARY_PATH"] = library_path
+'''
+# Digests are after the complete pinned core/mac patch series and domain rules.
+# At 154 neither series nor the domain file list touches this wrapper.
+BINDGEN_REPAIRS = {
+    "152.0.7977.82": {
+        "core_version": "152.0.7977.82-1",
+        "core_revision": "e71b91c6e336d0f25cfc6b9ef09298a9d2506e24",
+        "macos_version": "152.0.7977.82-1.1",
+        "macos_revision": "038db2b41f7aeb00bbceb2f5a56912b26eb5b284",
+        "original_sha256": BINDGEN_ORIGINAL_SHA256,
+        "patched_sha256": BINDGEN_PATCHED_SHA256,
+        "original_env": BINDGEN_ORIGINAL_ENV,
+        "scoped_env": BINDGEN_SCOPED_ENV,
+    },
+    "154.0.8037.97": {
+        "core_version": "154.0.8037.97-1",
+        "core_revision": "3e46b13825f808f0886e484d44532372655e5fe4",
+        "macos_version": "154.0.8037.97-1.1",
+        "macos_revision": "f7ba75f94442abda7ac3ea81790c217f8636d3ba",
+        "original_sha256": BINDGEN_154_ORIGINAL_SHA256,
+        "patched_sha256": BINDGEN_154_PATCHED_SHA256,
+        "original_env": BINDGEN_154_ORIGINAL_ENV,
+        "scoped_env": BINDGEN_154_SCOPED_ENV,
+    },
+}
+
+
 def _source_root(src: Path, arch: str) -> Path:
     if arch not in TRIPLES:
         raise ValueError(f"unsupported macOS runtime architecture: {arch}")
@@ -123,15 +170,17 @@ def repair_bindgen_wrapper(src: Path, arch: str) -> None:
         raise ValueError(f"linked bindgen wrapper: {path}")
     original = path.read_bytes()
     digest = hashlib.sha256(original).hexdigest()
-    if digest == BINDGEN_PATCHED_SHA256:
-        return
-    if digest != BINDGEN_ORIGINAL_SHA256:
+    repair = next((entry for entry in BINDGEN_REPAIRS.values()
+                   if digest in (entry["original_sha256"], entry["patched_sha256"])), None)
+    if repair is None:
         raise ValueError(f"unknown bindgen wrapper SHA256: {digest}")
-    if original.count(BINDGEN_ORIGINAL_ENV) != 1 or original.count(b"import sys\n") != 1:
+    if digest == repair["patched_sha256"]:
+        return
+    if original.count(repair["original_env"]) != 1 or original.count(b"import sys\n") != 1:
         raise ValueError("pinned bindgen wrapper block mismatch")
     patched = original.replace(b"import sys\n", b"import sys\nimport tempfile\n")
-    patched = patched.replace(BINDGEN_ORIGINAL_ENV, BINDGEN_SCOPED_ENV)
-    if hashlib.sha256(patched).hexdigest() != BINDGEN_PATCHED_SHA256:
+    patched = patched.replace(repair["original_env"], repair["scoped_env"])
+    if hashlib.sha256(patched).hexdigest() != repair["patched_sha256"]:
         raise ValueError("patched bindgen wrapper SHA256 mismatch")
     path.write_bytes(patched)
 

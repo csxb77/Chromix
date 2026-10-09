@@ -105,6 +105,18 @@ class PrepareRestoredBuildTest(unittest.TestCase):
                 path.rename(destination)
                 path.symlink_to(Path("..") / name / "bin" / name)
             self.write(rust / "version", "1.91.0-nightly (2026-06-16)")
+            if identity["chromium_version"] == "154.0.8037.97":
+                from tools import macos_restored_generators as mac154
+                fixture = json.loads((Path(__file__).parent / "fixtures/macos154_generators.json").read_text())
+                for name, content in fixture["sources"].items():
+                    self.write(self.src / mac154.DEVTOOLS / name, content)
+                # Package integrity and native probes have separate generator tests.
+                packages = mock.patch.object(mac154, "package_identity", side_effect=lambda src, key: {"fixture": key})
+                probes = mock.patch.object(mac154, "smoke", return_value={})
+                packages.start()
+                probes.start()
+                self.addCleanup(packages.stop)
+                self.addCleanup(probes.stop)
         if platform == "linux":
             from tools.tests.test_linux_typescript import install_typescript_fixture
             install_typescript_fixture(self.src)
@@ -389,12 +401,51 @@ class PrepareRestoredBuildTest(unittest.TestCase):
             result = prepare.prepare(self.work, "macos", "arm64")
         self.assertTrue(inspection["native_tools"])
         self.assertFalse((self.src / prepare.CLANG / "cr_build_revision").exists())
-        self.assertFalse((self.src / prepare.RUST / "VERSION").exists())
+        self.assertNotIn("VERSION", {path.name for path in (self.src / prepare.RUST).iterdir()})
         self.assertEqual(obj.stat().st_mtime_ns, before)
         self.assertEqual(result["removed_final_products"], ["Chromium.app"])
         self.assertEqual(result["counters"]["toolchain_invalidated_outputs"], 0)
         for name in ("build.ninja", "args.gn", ".ninja_deps", ".ninja_log"):
             self.assertTrue((self.out / name).exists())
+
+    def test_mac154_generator_repairs_are_fingerprinted_and_invalidate_generated_readers(self):
+        from tools import macos_restored_generators as mac154
+        self.fixture()
+        with self.native_context():
+            inspection = prepare.prepare(self.work, "macos", "arm64", phase="inspect")
+            finished = prepare.prepare(self.work, "macos", "arm64")
+        before = inspection["generator_fingerprint"]["macos154"]
+        after = finished["generator_fingerprint"]["macos154"]
+        self.assertTrue(before["repair_needed"])
+        self.assertFalse(after["repair_needed"])
+        self.assertEqual(finished["counters"]["generator_rechecks"], 1)
+        self.assertEqual(after["manifest_sha256"], mac154.manifest_digest())
+        self.assertNotEqual(before["sources"], after["sources"])
+        self.assertNotIn("probe", after)
+        probe = finished["macos_generator_probe"]
+        self.assertEqual(probe["manifest_sha256"], after["manifest_sha256"])
+        self.assertEqual(probe["generator_fingerprint_sha256"],
+                         mac154.sha256(json.dumps(after, sort_keys=True, separators=(",", ":")).encode()))
+        self.assertEqual(json.loads((self.src / prepare.MARKER).read_text())["macos_generator_probe"], probe)
+        self.assertEqual(json.loads((self.work / "upstream-cache-preparation.json").read_text())["macos_generator_probe"], probe)
+        with self.native_context(), mock.patch.object(mac154, "smoke", return_value={"fresh_probe": True}) as smoke:
+            resumed_inspection = prepare.prepare(self.work, "macos", "arm64", phase="inspect")
+            smoke.assert_not_called()
+            self.assertEqual(resumed_inspection["generator_fingerprint"]["macos154"], after)
+            resumed = prepare.prepare(self.work, "macos", "arm64")
+            smoke.assert_called_once()
+        self.assertEqual(resumed["generator_fingerprint"]["macos154"], after)
+        self.assertEqual(resumed["counters"]["generator_rechecks"], 0)
+        self.assertTrue(resumed["macos_generator_probe"]["fresh_probe"])
+        generated = self.write(self.out / "gen/output.js", "old generated input")
+        reader = self.object("generator-reader.o")
+        self.deps({"obj/generator-reader.o": ["gen/output.js"]})
+        self.write(self.out / ".ninja_log", "# ninja log v5\n0\t1\t1\tgen/output.js\t1\n")
+        with self.native_context(), mock.patch.object(mac154, "manifest_digest", return_value="f" * 64):
+            changed = prepare.prepare(self.work, "macos", "arm64")
+        self.assertEqual(changed["counters"]["generator_rechecks"], 1)
+        self.assertFalse(generated.exists())
+        self.assertFalse(reader.exists())
 
     def test_linux_native_and_cross_inspect_finish_preserve_target_objects(self):
         root = self.work

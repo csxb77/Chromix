@@ -182,6 +182,17 @@ print("1" if state.get("install_needed") else "0")' "$INSPECT")" = 1 ]; then
     --downloads "${CHROMIX_LINUX_GENERATOR_DOWNLOADS:-$WORK/linux-generator-downloads}" \
     "${GENERATOR_DOWNLOAD_ARGS[@]}"
 fi
+if [ "$PLATFORM" = macos ] && [ "$(python3 -c 'import json, sys
+state=json.loads(sys.argv[1]).get("generator_fingerprint", {}).get("macos154", {})
+print("1" if state.get("install_needed") else "0")' "$INSPECT")" = 1 ]; then
+  GENERATOR_DOWNLOAD_ARGS=()
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    GENERATOR_DOWNLOAD_ARGS=(--download)
+  fi
+  python3 "$REPO/tools/install_macos_generators.py" --repo "$REPO" --workdir "$WORK" --arch "$ARCH" \
+    --downloads "${CHROMIX_MACOS_GENERATOR_DOWNLOADS:-$WORK/macos-generator-downloads}" \
+    "${GENERATOR_DOWNLOAD_ARGS[@]}"
+fi
 python3 "$REPO/tools/prepare_restored_build.py" --phase finish \
   --platform "$PLATFORM" --arch "$ARCH" --workdir "$WORK"
 touch "$SRC/.chromix-toolchain-ready"

@@ -980,6 +980,13 @@ def _prepare(workdir: Path, platform: str, arch: str, *, phase: str, repo: Path,
     if platform == "linux":
         data["operation"] = "inspect_linux_typescript"
         generators["typescript"] = prepare_linux_typescript(src, host_arch=inspection["host"]["arch"], repo=repo)
+    if platform == "macos" and load_pins(repo, platform)["ChromiumVersion"] == "154.0.8037.97":
+        try:
+            from . import macos_restored_generators as mac154
+        except ImportError:
+            import macos_restored_generators as mac154
+        data["operation"] = "inspect_macos_generators"
+        generators["macos154"] = mac154.prepare(src, host_arch=inspection["host"]["arch"], repo=repo)
     generators_changed = (bool(pending and pending.get("generators_changed"))
                           or bool(pending and pending.get("generator_fingerprint") != generators)
                           or bool(old and old.get("generator_fingerprint") != generators))
@@ -1018,6 +1025,13 @@ def _prepare(workdir: Path, platform: str, arch: str, *, phase: str, repo: Path,
         typescript = prepare_linux_typescript(src, host_arch=inspection["host"]["arch"], repair=True, repo=repo)
         generators_changed |= generators["typescript"] != typescript
         generators["typescript"] = typescript
+        data["generators_changed"] = generators_changed
+    if "macos154" in generators:
+        data["operation"] = "prepare_macos_generators"
+        prepared = mac154.prepare(src, host_arch=inspection["host"]["arch"], repo=repo, repair=True)
+        data["macos_generator_probe"] = prepared.pop("probe")
+        generators_changed |= generators["macos154"] != prepared
+        generators["macos154"] = prepared
         data["generators_changed"] = generators_changed
     data["operation"] = "environment_identity"
     environment = environment_identity(src, platform)

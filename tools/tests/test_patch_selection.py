@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -22,7 +23,37 @@ def clone_repo(tmp_path: Path) -> Path:
             target = repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+    for name in ("build/prepare-ungoogled.sh", "build/apply-patches.sh"):
+        shutil.copy2(ROOT / name, repo / name)
+    shutil.copytree(ROOT / "build/windows/lite-tarball-files",
+                    repo / "build/windows/lite-tarball-files")
     return repo
+
+
+def set_macos_pins(repo: Path, *, historical: bool = False) -> None:
+    if historical:
+        version = "152.0.7977.82"
+        core = "e71b91c6e336d0f25cfc6b9ef09298a9d2506e24"
+        platform = "038db2b41f7aeb00bbceb2f5a56912b26eb5b284"
+    else:
+        version = "154.0.8037.97"
+        core = "3e46b13825f808f0886e484d44532372655e5fe4"
+        platform = "f7ba75f94442abda7ac3ea81790c217f8636d3ba"
+    values = {
+        "MacOSChromiumVersion": version,
+        "MacOSUngoogledVersion": version + "-1",
+        "MacOSUngoogledCommit": core,
+        "UngoogledMacOSVersion": version + "-1.1",
+        "UngoogledMacOSCommit": platform,
+    }
+    path = repo / "build/ungoogled-revisions.psd1"
+    text = path.read_text()
+    for field, value in values.items():
+        text, count = re.subn(rf'(?m)^(  {field} = )"[^"]+"',
+                              rf'\g<1>"{value}"', text)
+        assert count == 1
+    path.write_text(text)
+    (repo / "CHROMIUM_MACOS_VERSION").write_text(version + "\n")
 
 
 def set_linux_version(repo: Path, version: str) -> None:
@@ -94,16 +125,12 @@ def test_override_inventory_and_bytes_fail_closed(tmp_path, mutation):
 
 def test_wrong_154_platform_and_core_pin_fail_closed(tmp_path):
     repo = clone_repo(tmp_path)
-    text = (repo / "build/ungoogled-revisions.psd1").read_text()
-    text = text.replace('MacOSChromiumVersion = "152.0.7977.82"',
-                        'MacOSChromiumVersion = "154.0.8037.97"')
-    text = text.replace('MacOSUngoogledVersion = "152.0.7977.82-1"',
-                        'MacOSUngoogledVersion = "154.0.8037.97-1"')
-    text = text.replace('UngoogledMacOSVersion = "152.0.7977.82-1.1"',
-                        'UngoogledMacOSVersion = "154.0.8037.97-1.1"')
-    (repo / "build/ungoogled-revisions.psd1").write_text(text)
-    (repo / "CHROMIUM_MACOS_VERSION").write_text("154.0.8037.97\n")
-    with pytest.raises(selection.SelectionError, match="Windows or Linux"):
+    set_macos_pins(repo)
+    path = repo / "build/ungoogled-revisions.psd1"
+    path.write_text(path.read_text().replace(
+        'UngoogledMacOSCommit = "f7ba75f94442abda7ac3ea81790c217f8636d3ba"',
+        'UngoogledMacOSCommit = "' + selection.PLATFORM_COMMITS["linux"] + '"'))
+    with pytest.raises(selection.SelectionError, match="core/platform pins"):
         selection.select(repo, "macos")
 
     repo = clone_repo(tmp_path / "core")

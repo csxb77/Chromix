@@ -239,7 +239,7 @@ export CLOAKBROWSER_BINARY_PATH="/absolute/path/chromix/Chromium.app/Contents/Ma
 | 版本来源 | 当前仓库配置 | 含义 |
 |---|---|---|
 | Linux / Windows 源码 | Chromium `154.0.8037.97` | 对应平台工作流要编译的版本 |
-| macOS 源码 | Chromium `152.0.7977.82` | 独立的平台源码基线 |
+| macOS 源码 | Chromium `154.0.8037.97` | 使用上游运行 `37654894671` 的编译文件树；新版构建验证前保留既有发布下载入口 |
 | Docker `latest` / `154.0.8037.97` | amd64 / arm64 `154.0.8037.97` | 双架构使用同一发布版本，旧 `.57` 标签保留 |
 | SDK Linux x64 / ARM64 `stable` / `latest` | [`v154.0.8037.97`](https://github.com/xiaozhou26/Chromix/releases/tag/v154.0.8037.97) | Linux 双架构的自动下载映射 |
 | SDK Windows x64 `stable` / `latest` | [`v154.0.8037.97`](https://github.com/xiaozhou26/Chromix/releases/tag/v154.0.8037.97) | 已随 Python `152.0.7977.82.post3` / Node `0.1.3` 发布 |

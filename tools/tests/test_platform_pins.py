@@ -61,8 +61,8 @@ def save(root, values):
 @pytest.mark.parametrize("platform,version,core,overlay", [
     ("linux", "154.0.8037.97", "37085e47cf580c815a30402917d350ce97399ded",
      "f1441a6efb4d79427d1a3180b1877bbbdb1af7aa"),
-    ("macos", GLOBAL_VERSION, "e71b91c6e336d0f25cfc6b9ef09298a9d2506e24",
-     "038db2b41f7aeb00bbceb2f5a56912b26eb5b284"),
+    ("macos", "154.0.8037.97", "3e46b13825f808f0886e484d44532372655e5fe4",
+     "f7ba75f94442abda7ac3ea81790c217f8636d3ba"),
     ("windows", "154.0.8037.97", "37085e47cf580c815a30402917d350ce97399ded",
      "f03c33d7974af5b40f25b01984ded8418d60fbe4"),
 ])

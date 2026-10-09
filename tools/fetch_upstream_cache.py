@@ -93,6 +93,10 @@ LINUX_ESBUILD_MODULE = "third_party/devtools-frontend/src/node_modules/esbuild"
 LINUX_ESBUILD_ALIAS = "third_party/devtools-frontend/src/node_modules/.bin/esbuild"
 LINUX_ESBUILD_ALIAS_TARGET = "../esbuild/bin/esbuild"
 LINUX_ESBUILD_EXTERNAL_TARGET = "/usr/lib/node_modules/esbuild/"
+MAC154_ESBUILD_EXTERNAL_TARGET = (
+    "/Users/runner/work/ungoogled-chromium-macos/ungoogled-chromium-macos/"
+    "build/esbuild-node/node_modules/esbuild"
+)
 
 
 def linux_esbuild_alias_paths(selection):
@@ -101,6 +105,13 @@ def linux_esbuild_alias_paths(selection):
         return None
     prefix = "build/src/"
     return prefix + LINUX_ESBUILD_MODULE, prefix + LINUX_ESBUILD_ALIAS
+
+
+def mac154_esbuild_alias_paths(selection):
+    if (not isinstance(selection, SourceSelection) or selection.platform != "macos"
+            or selection.trees != ("src",)):
+        return None
+    return "src/" + LINUX_ESBUILD_MODULE, "src/" + LINUX_ESBUILD_ALIAS
 
 
 class CacheMiss(Exception):
@@ -931,14 +942,20 @@ class Extractor:
     def validate_links(self):
         symlinks = {name: target for name, kind, target, _, _ in self.links if kind == "sym"}
         hardlinks = {}
-        alias_paths = linux_esbuild_alias_paths(self.selection)
-        linux_esbuild_alias = (alias_paths and alias_paths[1] in symlinks
-                               and symlinks.get(alias_paths[0], "").startswith("/"))
-        if linux_esbuild_alias:
+        mac_alias_paths = mac154_esbuild_alias_paths(self.selection)
+        alias_paths = mac_alias_paths or linux_esbuild_alias_paths(self.selection)
+        external_target = (MAC154_ESBUILD_EXTERNAL_TARGET if mac_alias_paths
+                           else LINUX_ESBUILD_EXTERNAL_TARGET)
+        if mac_alias_paths and symlinks.get(mac_alias_paths[0], "").startswith("/"):
+            require(symlinks[mac_alias_paths[0]] == external_target,
+                    "unsafe_esbuild_alias_module")
+        external_esbuild_alias = (alias_paths and alias_paths[1] in symlinks
+                                  and symlinks.get(alias_paths[0], "").startswith("/"))
+        if external_esbuild_alias:
             module_path, alias_path = alias_paths
             require(symlinks[alias_path] == LINUX_ESBUILD_ALIAS_TARGET,
                     "unsafe_esbuild_alias")
-            require(symlinks.get(module_path) == LINUX_ESBUILD_EXTERNAL_TARGET,
+            require(symlinks.get(module_path) == external_target,
                     "unsafe_esbuild_alias_module")
             alias_parent = alias_path.rsplit("/", 1)[0]
             require(alias_parent in self.names or alias_parent in self.parents,
@@ -985,6 +1002,8 @@ class Extractor:
                 resolved.append(part)
                 link_name = "/".join(resolved)
                 self.check_case(link_name)
+                if mac_alias_paths:
+                    require(link_name not in self.omitted_esbuild_aliases, "external_symlink_chain")
                 link = symlinks.get(link_name)
                 if link is not None:
                     require(not link.startswith("/"), "external_symlink_chain")

@@ -38,7 +38,7 @@ class CrossPlatformBuildRegressionTest(unittest.TestCase):
 
         for platform, field in (("linux", "UngoogledLinuxCommit"), ("macos", "UngoogledMacOSCommit")):
             self.assertRegex(load_pins(REPO, platform)[field], r"^[a-f0-9]{40}$")
-        self.assertEqual(load_pins(REPO, "macos")["ChromiumVersion"], "152.0.7977.82")
+        self.assertEqual(load_pins(REPO, "macos")["ChromiumVersion"], "154.0.8037.97")
 
     def test_workflow_matches_sdk_asset_names(self):
         source = "\n".join((WORKFLOWS / f"build-{platform}-{arch}.yml").read_text()

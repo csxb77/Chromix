@@ -63,6 +63,22 @@ LINUX154_ESBUILD_ARTIFACTS = {
     "arm64": (11283212930, "build-cache-arm64", 5672718015,
               "sha256:4e4cdf8e1a4f4baeb54a6d62906fb1f02da6fe0136f016868f823f7f28bda21c"),
 }
+MAC154_ESBUILD_LINK = "third_party/devtools-frontend/src/node_modules/esbuild"
+MAC154_ESBUILD_ALIAS = "third_party/devtools-frontend/src/node_modules/.bin/esbuild"
+MAC154_ESBUILD_IDENTITY = {
+    "chromium_version": "154.0.8037.97",
+    "ungoogled_commit": "3e46b13825f808f0886e484d44532372655e5fe4",
+    "head_sha": "f7ba75f94442abda7ac3ea81790c217f8636d3ba",
+    "platform": "macos", "repository": "ungoogled-software/ungoogled-chromium-macos",
+    "repository_id": 177203026, "head_branch": "154.0.8037.97", "event": "push",
+    "workflow_path": ".github/workflows/build.yml", "run_id": 37654894671,
+}
+MAC154_ESBUILD_ARTIFACTS = {
+    "x64": (11527088964, "github_build_artifact_x86_64", 12505793478,
+            "sha256:f79f7e5769b25d588ab68aa8c2963caeb40e04504b375a97e7288ee77467f186"),
+    "arm64": (11520487436, "github_build_artifact_arm64", 10872477177,
+              "sha256:4fc2c995fc01213d3e819ff05db169fb14f0f93487b387f23cbf9a7b2e493e6a"),
+}
 MAC_EXTERNAL_TOOL_LINKS = {"third_party/dawn/tools/golang/mac-arm64/bin/go",
                            "third_party/dawn/tools/golang/mac-amd64/bin/go"}
 MAC_XCODE_LINK_ROOT = Path("out/Default/sdk/xcode_links")
@@ -169,13 +185,15 @@ def is_known_external_link(relative: str, platform: str, identity: dict | None =
     if relative in HOST_LINKS:
         return True
     if relative in (LINUX154_ESBUILD_LINK, LINUX154_ESBUILD_ALIAS):
-        if platform != "linux" or not isinstance(identity, dict):
+        if platform not in ("linux", "macos") or not isinstance(identity, dict):
             return False
+        artifacts = MAC154_ESBUILD_ARTIFACTS if platform == "macos" else LINUX154_ESBUILD_ARTIFACTS
+        source_identity = MAC154_ESBUILD_IDENTITY if platform == "macos" else LINUX154_ESBUILD_IDENTITY
         arch = identity.get("arch")
-        if not isinstance(arch, str) or arch not in LINUX154_ESBUILD_ARTIFACTS:
+        if not isinstance(arch, str) or arch not in artifacts:
             return False
-        artifact_id, name, size, digest = LINUX154_ESBUILD_ARTIFACTS[arch]
-        expected = dict(LINUX154_ESBUILD_IDENTITY, arch=arch, artifact_id=artifact_id,
+        artifact_id, name, size, digest = artifacts[arch]
+        expected = dict(source_identity, arch=arch, artifact_id=artifact_id,
                         artifact_name=name, artifact_size_in_bytes=size, artifact_digest=digest)
         return (identity == expected
                 and all(type(identity[key]) is type(value) for key, value in expected.items()))
@@ -209,11 +227,8 @@ def missing_host_links(cache: Path, donor: Path, result: dict, platform: str,
         paths.append(path.relative_to(donor).as_posix())
     if len(set(paths)) != len(paths):
         raise Miss("duplicate omitted external symlink")
-    esbuild = {LINUX154_ESBUILD_LINK, LINUX154_ESBUILD_ALIAS}
     if LINUX154_ESBUILD_ALIAS in paths and LINUX154_ESBUILD_LINK not in paths:
         raise Miss("incomplete esbuild external symlink chain")
-    if platform != "linux" and esbuild.intersection(paths):
-        raise Miss("incomplete donor source: unknown external symlink")
     return sorted(paths)
 
 

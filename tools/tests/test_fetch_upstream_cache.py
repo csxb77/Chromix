@@ -328,9 +328,67 @@ class FetchUpstreamCacheTest(unittest.TestCase):
                 self.assertEqual(result["download_bytes"], 0)
                 self.assertEqual(client.mock_calls, [])
 
-    def test_macos_identity_requires_explicit_152_source_under_shared_153(self):
+    def test_checked_in_macos_cache_matches_exact_two_arch_metadata(self):
+        manifest = json.loads(cache.MANIFEST.read_text())
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["chromium_version"], "153.0.8010.36")
+        self.assertEqual(manifest["ungoogled_commit"], "dd8fb9b5c837982faf41ba58cd30a5664e77c329")
+        source = manifest["sources"]["macos"]
+        self.assertEqual(source, {
+            "chromium_version": "154.0.8037.97",
+            "ungoogled_commit": "3e46b13825f808f0886e484d44532372655e5fe4",
+            "repository": "ungoogled-software/ungoogled-chromium-macos",
+            "repository_id": 177203026,
+            "head_sha": "f7ba75f94442abda7ac3ea81790c217f8636d3ba",
+            "head_branch": "154.0.8037.97", "event": "push",
+            "workflow_path": ".github/workflows/build.yml",
+            "run_id": 37654894671, "source_roots": ["src"],
+            "artifacts": {
+                "x64": {
+                    "id": 11527088964, "name": "github_build_artifact_x86_64",
+                    "size_in_bytes": 12505793478,
+                    "digest": "sha256:f79f7e5769b25d588ab68aa8c2963caeb40e04504b375a97e7288ee77467f186",
+                    "expires_at": "2027-01-05T16:48:13Z", "inner_archive": "build_src.tar.zst",
+                },
+                "arm64": {
+                    "id": 11520487436, "name": "github_build_artifact_arm64",
+                    "size_in_bytes": 10872477177,
+                    "digest": "sha256:4fc2c995fc01213d3e819ff05db169fb14f0f93487b387f23cbf9a7b2e493e6a",
+                    "expires_at": "2027-01-05T16:48:13Z", "inner_archive": "build_src.tar.zst",
+                },
+            },
+        })
+        for arch in ("x64", "arm64"):
+            with self.subTest(arch=arch):
+                pin, identity = cache.load_manifest("macos", arch, 37654894671, root=cache.ROOT)
+                self.assertEqual(pin, {
+                    **{key: value for key, value in source.items() if key != "artifacts"},
+                    "artifact": source["artifacts"][arch],
+                })
+                self.assertEqual({key: identity[key] for key in (
+                    "target", "chromium_version", "head_sha", "run_id", "artifact_id", "artifact_digest")}, {
+                    "target": "macos-" + arch, "chromium_version": "154.0.8037.97",
+                    "head_sha": source["head_sha"], "run_id": 37654894671,
+                    "artifact_id": source["artifacts"][arch]["id"],
+                    "artifact_digest": source["artifacts"][arch]["digest"],
+                })
+                self.assert_metadata_provenance(pin, datetime(2026, 10, 9, tzinfo=timezone.utc))
+                run, _ = metadata(pin)
+                other_pin, _ = cache.load_manifest(
+                    "macos", "arm64" if arch == "x64" else "x64", root=cache.ROOT)
+                _, other_artifact = metadata(other_pin)
+                with self.assertRaisesRegex(cache.CacheMiss, "artifact_mismatch"):
+                    cache.validate_metadata(pin, run, other_artifact, NOW)
+                client = mock.Mock()
+                result = cache.fetch("macos", arch, self.destination, 34033879808,
+                                     root=cache.ROOT, client=client)
+                self.assertEqual(result["reason"], "run_id_mismatch")
+                self.assertEqual(result["download_bytes"], 0)
+                self.assertEqual(client.mock_calls, [])
+
+    def test_macos_identity_requires_explicit_154_source_under_shared_153(self):
         pin, _ = cache.load_manifest("macos", "x64", root=self.root)
-        self.assertEqual(pin["chromium_version"], "152.0.7977.82")
+        self.assertEqual(pin["chromium_version"], "154.0.8037.97")
         for field in ("chromium_version", "ungoogled_commit"):
             value = self.manifest["sources"]["macos"].pop(field)
             self.save_manifest()
@@ -341,8 +399,8 @@ class FetchUpstreamCacheTest(unittest.TestCase):
             self.save_manifest()
 
     def test_manifest_shared_identity_cannot_follow_macos_override(self):
-        self.manifest.update(chromium_version="152.0.7977.82",
-                             ungoogled_commit="e71b91c6e336d0f25cfc6b9ef09298a9d2506e24")
+        source = self.manifest["sources"]["macos"]
+        self.manifest.update({key: source[key] for key in ("chromium_version", "ungoogled_commit")})
         self.save_manifest()
         for target in cache.SOURCES:
             with self.subTest(target=target), self.assertRaisesRegex(cache.CacheMiss, "pin_mismatch"):

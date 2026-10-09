@@ -13,7 +13,7 @@ import pytest
 
 from tools import apply_restored_patches as arp
 from tools import patch_selection as selection
-from tools.tests.test_patch_selection import clone_repo, set_linux_version
+from tools.tests.test_patch_selection import clone_repo, set_linux_version, set_macos_pins
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = "0209-display-native-screen-regressions.patch"
@@ -71,6 +71,13 @@ TEST_F(WebFrameWidgetSimTest, PropagateScaleToRemoteFrames) {
 }
 
 
+@pytest.fixture
+def macos152_repo(tmp_path):
+    repo = clone_repo(tmp_path)
+    set_macos_pins(repo, historical=True)
+    return repo
+
+
 def run_patch(src, patch, reverse=False):
     program = shutil.which("gpatch") or shutil.which("patch")
     assert program, "GNU patch is required"
@@ -80,8 +87,8 @@ def run_patch(src, patch, reverse=False):
         env={**os.environ, "LC_ALL": "C", "PATCH_GET": "0"})
 
 
-def test_exact_macos152_selects_only_authenticated_0209():
-    identity, patches = selection.select(ROOT, "macos")
+def test_exact_macos152_selects_only_authenticated_0209(macos152_repo):
+    identity, patches = selection.select(macos152_repo, "macos")
     assert len(patches) == 224
     assert identity["selection"] == {
         "schema_version": 1, "version": selection.MACOS152_VERSION, "platform": "macos",
@@ -102,8 +109,8 @@ def test_exact_macos152_selects_only_authenticated_0209():
 
 @pytest.mark.parametrize("mutation", ["missing", "changed", "extra", "predecessor",
                                       "symlink", "directory-symlink", "series", "pins"])
-def test_macos152_inputs_fail_closed(tmp_path, mutation):
-    repo = clone_repo(tmp_path)
+def test_macos152_inputs_fail_closed(macos152_repo, mutation):
+    repo = macos152_repo
     directory = repo / selection.MACOS152_OVERRIDE_ROOT
     patch = directory / NAME
     if mutation == "missing":
@@ -136,8 +143,8 @@ def test_macos152_inputs_fail_closed(tmp_path, mutation):
     ("MacOSUngoogledVersion", "152.0.7977.82-2"),
     ("UngoogledMacOSVersion", "152.0.7977.82-1.2"),
 ])
-def test_macos152_requires_exact_core_and_platform_pins(tmp_path, field, value):
-    repo = clone_repo(tmp_path)
+def test_macos152_requires_exact_core_and_platform_pins(macos152_repo, field, value):
+    repo = macos152_repo
     path = repo / "build/ungoogled-revisions.psd1"
     path.write_text(re.sub(rf'(?m)^(  {field} = )"[^"]+"',
                            rf'\g<1>"{value}"', path.read_text()))
@@ -147,7 +154,7 @@ def test_macos152_requires_exact_core_and_platform_pins(tmp_path, field, value):
 
 @pytest.mark.parametrize("which", ["source", "core"])
 @pytest.mark.parametrize("value", [None, "154.0.8037.97", "152.0.7977.82"])
-def test_macos152_checks_source_and_tooling_version(tmp_path, which, value):
+def test_macos152_checks_source_and_tooling_version(tmp_path, macos152_repo, which, value):
     directory = tmp_path / which
     path = directory / ("chrome/VERSION" if which == "source" else "chromium_version.txt")
     path.parent.mkdir(parents=True)
@@ -158,10 +165,10 @@ def test_macos152_checks_source_and_tooling_version(tmp_path, which, value):
         path.write_text(text)
     kwargs = {"src" if which == "source" else "core": directory}
     if value == selection.MACOS152_VERSION:
-        assert "selection" in selection.select(ROOT, "macos", **kwargs)[0]
+        assert "selection" in selection.select(macos152_repo, "macos", **kwargs)[0]
     else:
         with pytest.raises(selection.SelectionError, match="version|missing patch input"):
-            selection.select(ROOT, "macos", **kwargs)
+            selection.select(macos152_repo, "macos", **kwargs)
 
 
 def test_macos152_does_not_change_other_platform_or_legacy_selection(tmp_path):
@@ -176,16 +183,16 @@ def test_macos152_does_not_change_other_platform_or_legacy_selection(tmp_path):
 
 
 @pytest.mark.parametrize("style", ["posix", "windows"])
-def test_macos152_preparation_key_binds_selected_identity(monkeypatch, style):
-    actual = selection.preparation_key(ROOT, "macos", style)
-    identity, patches = selection.select(ROOT, "macos")
+def test_macos152_preparation_key_binds_selected_identity(macos152_repo, monkeypatch, style):
+    actual = selection.preparation_key(macos152_repo, "macos", style)
+    identity, patches = selection.select(macos152_repo, "macos")
     monkeypatch.setattr(selection, "select", lambda *_: (
         {key: value for key, value in identity.items() if key != "selection"}, patches))
-    assert selection.preparation_key(ROOT, "macos", style) != actual
+    assert selection.preparation_key(macos152_repo, "macos", style) != actual
     legacy = [("patches/" + Path(path).name,
                (ROOT / "patches" / Path(path).name).read_bytes()) for path, _ in patches]
     monkeypatch.setattr(selection, "select", lambda *_: ({}, legacy))
-    assert selection.preparation_key(ROOT, "macos", style) != actual
+    assert selection.preparation_key(macos152_repo, "macos", style) != actual
 
 
 def test_0209_preserves_every_test_and_only_changes_152_context():
@@ -224,7 +231,7 @@ def test_independent_152_context_reproduces_failure_and_0209_0216_roundtrip(tmp_
 
 
 @pytest.mark.parametrize("substituted", [False, True])
-def test_optional_independent_152_full_stack(tmp_path, substituted):
+def test_optional_independent_152_full_stack(tmp_path, macos152_repo, substituted):
     root = os.environ.get("CHROMIX_MACOS152_SOURCES")
     if not root:
         pytest.skip("set CHROMIX_MACOS152_SOURCES to independent pristine/core/mac directories")
@@ -238,7 +245,7 @@ def test_optional_independent_152_full_stack(tmp_path, substituted):
             start - 1:start - 1 + len(text.splitlines())]) == text
     src = tmp_path / "src"
     shutil.copytree(pristine, src)
-    _, selected = selection.select(ROOT, "macos", src=src, core=core)
+    _, selected = selection.select(macos152_repo, "macos", src=src, core=core)
     targets = {target for _, raw in selected
                for target, _, _ in arp.transform_patch(raw, set(), [])[1]}
     # Apply every predecessor section affecting a selected target, in series order.
@@ -268,10 +275,10 @@ def test_optional_independent_152_full_stack(tmp_path, substituted):
                 text, encoding = arp._decode(path.read_bytes())
                 path.write_bytes(arp._substitute(text, rules).encode(encoding))
         program = shutil.which("gpatch") or "patch"
-        report = arp.run_apply(src, ROOT, core, mac, "macos", program)
+        report = arp.run_apply(src, macos152_repo, core, mac, "macos", program)
         assert report["status"] == "applied"
         assert report["patch_count"] == 224
-        assert arp.run_apply(src, ROOT, core, mac, "macos", program, check=True)["status"] == "checked"
+        assert arp.run_apply(src, macos152_repo, core, mac, "macos", program, check=True)["status"] == "checked"
         (src / ".chromix-domain-substituted").write_text(selection.MACOS152_CORE)
     else:
         shutil.copytree(ROOT / arp.LITE, src, dirs_exist_ok=True)
@@ -281,7 +288,7 @@ def test_optional_independent_152_full_stack(tmp_path, substituted):
     output = tmp_path / "verified.json"
     result = subprocess.run([
         os.sys.executable, str(ROOT / "tools/verify_patch_stack.py"),
-        "--src", str(src), "--repo", str(ROOT), "--core", str(core),
+        "--src", str(src), "--repo", str(macos152_repo), "--core", str(core),
         "--platform-tooling", str(mac), "--platform", "macos", "--output", str(output)],
         capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr

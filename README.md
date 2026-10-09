@@ -241,7 +241,7 @@ These are separate version sources:
 | Version source | Current checkout | Meaning |
 |---|---|---|
 | Linux / Windows source pins | Chromium `154.0.8037.97` | Version compiled by those platform workflows |
-| macOS source pin | Chromium `152.0.7977.82` | Independent macOS source baseline |
+| macOS source pin | Chromium `154.0.8037.97` | Build cache from upstream run `37654894671`; existing published downloads remain unchanged until the new build is verified |
 | Container `latest` / `154.0.8037.97` | amd64 / arm64 `154.0.8037.97` | Both architectures use the same release; the old `.57` tag is retained |
 | SDK Linux x64 / ARM64 `stable` / `latest` | [`v154.0.8037.97`](https://github.com/xiaozhou26/Chromix/releases/tag/v154.0.8037.97) | Platform-specific automatic download target |
 | SDK Windows x64 `stable` / `latest` | [`v154.0.8037.97`](https://github.com/xiaozhou26/Chromix/releases/tag/v154.0.8037.97) | Published in Python `152.0.7977.82.post3` / Node `0.1.3` |

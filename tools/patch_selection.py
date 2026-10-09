@@ -16,9 +16,11 @@ except ImportError:
 
 VERSION = "154.0.8037.97"
 CORE = "37085e47cf580c815a30402917d350ce97399ded"
+MACOS154_CORE = "3e46b13825f808f0886e484d44532372655e5fe4"
 PLATFORM_COMMITS = {
     "windows": "f03c33d7974af5b40f25b01984ded8418d60fbe4",
     "linux": "f1441a6efb4d79427d1a3180b1877bbbdb1af7aa",
+    "macos": "f7ba75f94442abda7ac3ea81790c217f8636d3ba",
 }
 LEGACY_VERSIONS = {"152.0.7977.82", "153.0.8010.36", "153.0.8010.47"}
 OVERRIDE_ROOT = "patches/chromium154"
@@ -158,11 +160,13 @@ def select(repo: Path, platform: str | None = None, *, src: Path | None = None,
     selection = None
     if version == VERSION:
         if platform not in PLATFORM_COMMITS:
-            raise SelectionError("Chromium 154 overrides require Windows or Linux")
+            raise SelectionError("Chromium 154 overrides require Windows, Linux, or macOS")
         prefix = "Ungoogled" + PLATFORMS[platform]
-        if (pins["UngoogledCommit"] != CORE or pins["UngoogledVersion"] != VERSION + "-1"
+        core_commit = MACOS154_CORE if platform == "macos" else CORE
+        platform_version = VERSION + ("-1.1" if platform in ("windows", "macos") else "-1")
+        if (pins["UngoogledCommit"] != core_commit or pins["UngoogledVersion"] != VERSION + "-1"
                 or pins[prefix + "Commit"] != PLATFORM_COMMITS[platform]
-                or pins[prefix + "Version"] != VERSION + ("-1.1" if platform == "windows" else "-1")):
+                or pins[prefix + "Version"] != platform_version):
             raise SelectionError("Chromium 154 core/platform pins do not match reviewed overrides")
         validate_overrides(repo)
         if len(names) != 224 or not {"patches/" + name for name in OVERRIDES}.issubset(names):
@@ -170,7 +174,7 @@ def select(repo: Path, platform: str | None = None, *, src: Path | None = None,
         selected = [OVERRIDE_ROOT + "/" + Path(name).name if Path(name).name in OVERRIDES else name
                     for name in names]
         selection = {"schema_version": 1, "version": VERSION, "platform": platform,
-                     "core_commit": CORE, "platform_commit": PLATFORM_COMMITS[platform],
+                     "core_commit": core_commit, "platform_commit": PLATFORM_COMMITS[platform],
                      "base_series_sha256": digest(series)}
     elif macos152:
         if (pins["UngoogledCommit"] != MACOS152_CORE
