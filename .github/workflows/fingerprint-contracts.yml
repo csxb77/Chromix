@@ -119,7 +119,7 @@ jobs:
           tools/tests/test_pixel_noise_diagnostic.py tools/tests/test_gpu_identity_diagnostic.py
           tools/tests/test_browser_feature_check.py
           tools/tests/test_macos152_patch_selection.py tools/tests/test_macos154_patch_selection.py
-          tools/tests/test_mac154_restore_links.py tools/tests/test_macos_runtime.py
+          tools/tests/test_mac154_restore_links.py
           tools/tests/test_macos_restored_generators.py tools/tests/test_install_macos_generators.py
           tools/tests/test_backend_completion.py tools/tests/test_backend_media.py
           tools/tests/test_backend_fonts.py tools/tests/test_backend_capabilities.py
@@ -128,6 +128,11 @@ jobs:
           tools/tests/test_device_render.py tools/tests/test_device_launch.py
           tools/tests/test_fingerprint_corpus_review.py tools/tests/test_gpu_device_matrix.py
           sdk/python/tests --junitxml=contracts-python.xml
+      - name: macOS loader and POSIX shell isolation contracts
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        run: >-
+          python -X utf8 -m pytest -q tools/tests/test_macos_runtime.py
+          --junitxml=contracts-macos-runtime.xml
       - name: Node SDK regression
         if: ${{ !cancelled() }}
         run: npm test --prefix sdk/node
@@ -139,4 +144,5 @@ jobs:
           path: |
             source-preimages.json
             contracts-python.xml
+            contracts-macos-runtime.xml
           if-no-files-found: warn
