@@ -5,6 +5,7 @@ import json
 import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+import shlex
 import shutil
 import struct
 import subprocess
@@ -1117,12 +1118,41 @@ class MacOSRuntimeShellTest(unittest.TestCase):
                         BINDGEN_WRAPPER=str(wrapper), WRAPPER_SHA256=runtime.BINDGEN_REPAIRS[version]["patched_sha256"],
                         LOADER_LINK=str(destination), LLVM_RUNTIME=str(self.src / runtime.LIBRARY_DIRS[2] / "libLLVM.dylib"))
 
+    def run_shell(self, command, *args, env=None, cwd=None):
+        environ = self.env if env is None else env
+        clean = {key: value for key, value in environ.items() if not key.startswith("DYLD_")}
+        # Non-SIP Bash must start clean; poison the running shell before the script.
+        setup = 'test -z "${!DYLD_@}"; '
+        for key, value in environ.items():
+            if key.startswith("DYLD_"):
+                setup += f"export {shlex.quote(key + '=' + value)}; "
+                setup += f'test "${{{key}}}" = {shlex.quote(value)}; '
+        return subprocess.run([str(self.SHELL), "-euo", "pipefail", "-c", setup + command, *args],
+                              env=clean, cwd=cwd, text=True, capture_output=True, timeout=20)
+
     def run_script(self, relative, *args):
-        return subprocess.run([str(self.SHELL), "-euo", "pipefail", str(self.repo / relative), *args],
-                              env=self.env, text=True, capture_output=True, timeout=20)
+        return self.run_shell('source "$0" "$@"; test -z "${!DYLD_@}"',
+                              str(self.repo / relative), *args)
 
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_launcher_preserves_exported_poison_and_script_arguments(self):
+        self.configure("arm64")
+        script = self.repo / "shell fixture.sh"
+        script.write_text(
+            'test "$0" = "${BASH_SOURCE[0]}"; test "$#" = 2; '
+            'test "$1" = "argument with spaces"; test "$2" = ""; '
+            'test "$DYLD_INSERT_LIBRARIES" = /poisoned; '
+            'declare -p DYLD_INSERT_LIBRARIES DYLD_UNKNOWN_OVERRIDE; '
+            'unset -- "${!DYLD_@}"\n')
+        before = dict(self.env)
+        result = self.run_script(script.name, "argument with spaces", "")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            'declare -x DYLD_INSERT_LIBRARIES="/poisoned"',
+            'declare -x DYLD_UNKNOWN_OVERRIDE="/poisoned"'])
+        self.assertEqual(self.env, before)
 
     def test_scrubs_before_inspect_and_finish_without_rebuilding_bindgen(self):
         self.configure("arm64")
@@ -1229,11 +1259,11 @@ class MacOSRuntimeShellTest(unittest.TestCase):
         self.configure("arm64")
         env = dict(self.env, DYLD_LIBRARY_PATH="/bad", DYLD_INSERT_LIBRARIES="/bad",
                    DYLD_FALLBACK_LIBRARY_PATH="/bad", DYLD_VERSIONED_FRAMEWORK_PATH="/bad")
-        command = 'value="$("$1" "$2" --src "$3" --arch arm64)"; eval "$value"; "$1" -c '\
-                  "'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"DYLD_\")}))'"
-        result = subprocess.run([str(self.SHELL), "-euo", "pipefail", "-c", command, "fixture",
-                                 sys.executable, str(REPO / "tools/macos_runtime.py"), str(self.src)],
-                                env=env, text=True, capture_output=True, timeout=10)
+        command = 'value="$(unset -- "${!DYLD_@}"; "$1" "$2" --src "$3" --arch arm64)"; '
+        command += 'test "$DYLD_INSERT_LIBRARIES" = /bad; eval "$value"; test -z "${!DYLD_@}"; "$1" -c '\
+                   "'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(\"DYLD_\")}))'"
+        result = self.run_shell(command, "fixture", sys.executable,
+                                str(REPO / "tools/macos_runtime.py"), str(self.src), env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {})
 
@@ -1241,10 +1271,11 @@ class MacOSRuntimeShellTest(unittest.TestCase):
         self.configure("arm64")
         command = 'DYLD_LIBRARY_PATH=/bad; DYLD_HIDDEN_OVERRIDE=/bad; '
         command += 'value="$(unset -- "${!DYLD_@}"; "$1" "$2" --src "$3" --arch arm64)"; '
-        command += 'eval "$value"; test -z "${!DYLD_@}"'
-        result = subprocess.run([str(self.SHELL), "-euo", "pipefail", "-c", command, "fixture",
-                                 sys.executable, str(REPO / "tools/macos_runtime.py"), str(self.src)],
-                                env=self.env, text=True, capture_output=True, timeout=10)
+        command += 'test "$DYLD_HIDDEN_OVERRIDE" = /bad; test "$DYLD_INSERT_LIBRARIES" = /poisoned; '
+        command += 'eval "$value"; test -z "${!DYLD_@}"; "$1" -c '\
+                   "'import os; assert not any(k.startswith(\"DYLD_\") for k in os.environ)'"
+        result = self.run_shell(command, "fixture", sys.executable,
+                                str(REPO / "tools/macos_runtime.py"), str(self.src))
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_wrong_host_fails_before_any_probe_or_loader_write(self):
@@ -1261,11 +1292,11 @@ class MacOSRuntimeShellTest(unittest.TestCase):
         src = self.root / "$(touch INJECTED) ' runtime"
         src.mkdir()
         layout(src)
-        command = 'value="$("$1" "$2" --src "$3" --arch arm64)"; eval "$value"; "$1" -c '\
-                  "'import os; print(os.environ.get(\"DYLD_LIBRARY_PATH\", \"clean\"))'"
-        result = subprocess.run([str(self.SHELL), "-euo", "pipefail", "-c", command, "fixture",
-                                 sys.executable, str(REPO / "tools/macos_runtime.py"), str(src)],
-                                cwd=self.root, text=True, capture_output=True, timeout=10)
+        command = 'value="$(unset -- "${!DYLD_@}"; "$1" "$2" --src "$3" --arch arm64)"; '
+        command += 'eval "$value"; test -z "${!DYLD_@}"; "$1" -c '\
+                   "'import os; print(os.environ.get(\"DYLD_LIBRARY_PATH\", \"clean\"))'"
+        result = self.run_shell(command, "fixture", sys.executable,
+                                str(REPO / "tools/macos_runtime.py"), str(src), cwd=self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "clean")
         self.assertFalse((self.root / "INJECTED").exists())
