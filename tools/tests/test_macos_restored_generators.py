@@ -11,6 +11,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+if os.name != "posix":
+    raise unittest.SkipTest("macOS generator file operations require POSIX directory descriptors")
+
 from tools import macos_restored_generators as gen
 from tools import prepare_restored_build as prepare
 from tools import platform_pins
