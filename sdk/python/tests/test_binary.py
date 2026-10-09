@@ -117,7 +117,7 @@ def test_zip_download_public_api_and_cache(cache, monkeypatch, system, machine, 
     assert binary.resolve_platform() == plat
     assert binary._ASSETS[plat][:2] == (f"chromix-{plat}.zip", "zip")
     assert not api.binary_info(release_channel="stable")["installed"]
-    tag = "v154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64") else TAG
+    tag = "v154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64") else TAG
     root = cache / tag / plat
     chrome = binary._binary_path(plat, root)
     assert api.ensure_binary(release_channel="stable") == chrome
@@ -302,7 +302,7 @@ def test_public_api_rejects_incomplete_cache(cache, monkeypatch, plat, missing):
     if missing == "external-link" and os.name == "nt":
         pytest.skip("POSIX symlink fixture")
     monkeypatch.setattr(api, "resolve_platform", lambda: plat)
-    tag = "v154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64") else TAG
+    tag = "v154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64") else TAG
     root = cache / tag / plat
     launcher = root / binary._ASSETS[plat][2]
     chrome = binary._binary_path(plat, root)
@@ -324,30 +324,31 @@ def test_public_api_rejects_incomplete_cache(cache, monkeypatch, plat, missing):
     assert len(urls) == 2
 
 
+@pytest.mark.parametrize("channel", ["stable", "latest"])
 @pytest.mark.parametrize("machine,plat,other", [
     ("AMD64", "win-x64", "win-arm64"), ("ARM64", "win-arm64", "win-x64"),
 ])
 @pytest.mark.parametrize("failure", ["", "http"])
-def test_windows_cache_isolation_without_architecture_fallback(cache, monkeypatch, machine, plat, other, failure):
+def test_windows_cache_isolation_without_architecture_fallback(cache, monkeypatch, machine, plat, other, failure, channel):
     monkeypatch.setattr(binary.platform, "system", lambda: "Windows")
     monkeypatch.setattr(binary.platform, "machine", lambda: machine)
-    tag = "v154.0.8037.97" if plat == "win-x64" else TAG
+    tag = "v154.0.8037.97"
     other_root = cache / tag / other
     (other_root / "chromix").mkdir(parents=True)
     (other_root / "chromix/chromix.cmd").write_text("other launcher")
     (other_root / "chromix/chrome.exe").write_text(other)
     assert binary._bundle_complete(other, other_root)
-    assert not api.binary_info(release_channel="stable")["installed"]
+    assert not api.binary_info(release_channel=channel)["installed"]
     urls = mock_release(monkeypatch, plat, zip_fixture(bundle(plat)), failure)
     if failure:
         with pytest.raises(urllib.error.HTTPError):
-            api.ensure_binary(release_channel="stable")
-        info = api.binary_info(release_channel="stable")
+            api.ensure_binary(release_channel=channel)
+        info = api.binary_info(release_channel=channel)
         assert not info["installed"] and info["path"] is None
         assert urls == [f"{HOST}/chromix-{plat}.zip"]
         assert list((cache / tag).iterdir()) == [other_root]
     else:
-        assert api.ensure_binary(release_channel="stable") == cache / tag / plat / "chromix/chrome.exe"
+        assert api.ensure_binary(release_channel=channel) == cache / tag / plat / "chromix/chrome.exe"
         assert urls == [f"{HOST}/chromix-{plat}.zip", f"{HOST}/SHA256SUMS"]
         assert {root.name for root in (cache / tag).iterdir()} == {plat, other}
     assert (other_root / "chromix/chrome.exe").read_text() == other
@@ -374,7 +375,7 @@ def test_windows_launch_executable_and_x64_widevine_compatibility(cache, monkeyp
     mock_release(monkeypatch, plat, zip_fixture(bundle(plat)))
     chrome, args, _, _ = api._prepare(
         True, None, [], False, None, None, False, None, False, release_channel="stable")
-    tag = "v154.0.8037.97" if plat == "win-x64" else TAG
+    tag = "v154.0.8037.97"
     assert chrome == cache / tag / plat / "chromix/chrome.exe"
     flags = [arg for arg in args if arg.startswith("--uxr-widevine-cdm=")]
     assert flags == ([f"--uxr-widevine-cdm={cdm}"] if plat == "win-x64" else [])
@@ -431,7 +432,7 @@ def test_platform_channels_info_install_and_cli(cache, monkeypatch, capsys, syst
     monkeypatch.setattr(binary.platform, "machine", lambda: machine)
     if channel:
         monkeypatch.setenv("CLOAKBROWSER_RELEASE_CHANNEL", channel)
-    expected = ("154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64") else
+    expected = ("154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64") else
                 "152.0.7977.75" if channel == "latest" else "151.0.7922.173")
     monkeypatch.delenv("CHROMIX_DOWNLOAD_HOST")
     calls = []
@@ -474,7 +475,7 @@ def test_platform_channel_promotion_preserves_old_caches(cache, monkeypatch, sys
     old_chrome.write_text("old browser")
     (old_root / binary._ASSETS[plat][2]).write_text("old launcher")
     urls = mock_release(monkeypatch, plat, zip_fixture(bundle(plat)))
-    promoted = plat in ("linux-x64", "linux-arm64", "win-x64")
+    promoted = plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64")
     assert api.binary_info(release_channel=channel)["installed"] == (not promoted)
     selected_tag = "v154.0.8037.97" if promoted else old_tag
     assert api.ensure_binary(release_channel=channel) == binary._binary_path(plat, cache / selected_tag / plat)
@@ -484,17 +485,18 @@ def test_platform_channel_promotion_preserves_old_caches(cache, monkeypatch, sys
     assert len(urls) == (2 if promoted else 0)
 
 
+@pytest.mark.parametrize("plat", ["win-x64", "win-arm64"])
 @pytest.mark.parametrize("channel,old_tag", [
     ("stable", "v151.0.7922.173"), ("latest", "v152.0.7977.75"),
 ])
-def test_windows_x64_promotion_failure_never_uses_old_channel_cache(cache, monkeypatch, channel, old_tag):
-    monkeypatch.setattr(api, "resolve_platform", lambda: "win-x64")
-    old_root = cache / old_tag / "win-x64"
-    old_chrome = binary._binary_path("win-x64", old_root)
+def test_windows_promotion_failure_never_uses_old_channel_cache(cache, monkeypatch, plat, channel, old_tag):
+    monkeypatch.setattr(api, "resolve_platform", lambda: plat)
+    old_root = cache / old_tag / plat
+    old_chrome = binary._binary_path(plat, old_root)
     old_chrome.parent.mkdir(parents=True)
     old_chrome.write_text("old browser")
     (old_root / "chromix/chromix.cmd").write_text("old launcher")
-    urls = mock_release(monkeypatch, "win-x64", b"", "http")
+    urls = mock_release(monkeypatch, plat, b"", "http")
     with pytest.raises(urllib.error.HTTPError):
         api.ensure_binary(release_channel=channel)
     info = api.binary_info(release_channel=channel)
@@ -502,7 +504,7 @@ def test_windows_x64_promotion_failure_never_uses_old_channel_cache(cache, monke
     assert not info["installed"] and info["path"] is None
     assert api.ensure_binary(browser_version=old_tag) == old_chrome
     assert old_chrome.read_text() == "old browser"
-    assert urls == [f"{HOST}/chromix-win-x64.zip"]
+    assert urls == [f"{HOST}/chromix-{plat}.zip"]
     assert list((cache / "v154.0.8037.97").iterdir()) == []
 
 
@@ -530,7 +532,7 @@ def test_explicit_versions_do_not_follow_new_default(cache, monkeypatch, system,
 @pytest.mark.parametrize("plat", binary._ASSETS)
 def test_major_and_invalid_selectors(cache, monkeypatch, plat):
     monkeypatch.setattr(api, "resolve_platform", lambda: plat)
-    if plat in ("linux-x64", "linux-arm64", "win-x64"):
+    if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64"):
         assert api.binary_info(browser_version="154")["version"] == "154.0.8037.97"
     else:
         with pytest.raises(ValueError, match="Unsupported browser version"):
@@ -558,7 +560,7 @@ def test_local_override_bypasses_resolution_but_info_stays_metadata(cache, monke
     monkeypatch.setenv("CLOAKBROWSER_BINARY_PATH", str(local))
     assert api.ensure_binary(browser_version="invalid", release_channel="invalid") == local
     info = api.binary_info()
-    assert info["version"] == ("154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64") else "151.0.7922.173")
+    assert info["version"] == ("154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64") else "151.0.7922.173")
     assert not info["installed"] and info["path"] is None
     local.unlink()
     with pytest.raises(FileNotFoundError):
@@ -570,7 +572,7 @@ def test_local_override_bypasses_resolution_but_info_stays_metadata(cache, monke
 def test_update_requires_newer_platform_asset(cache, monkeypatch, plat, case):
     monkeypatch.setattr(api, "resolve_platform", lambda: plat)
     monkeypatch.setenv("CLOAKBROWSER_RELEASE_CHANNEL", "latest")
-    current = "154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64") else "152.0.7977.75"
+    current = "154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64") else "152.0.7977.75"
     candidate = "155.0.1.2" if case == "matching" else "154.0.8037.97"
     if case == "older":
         candidate = "151.0.7922.173"
@@ -593,7 +595,7 @@ def test_update_requires_newer_platform_asset(cache, monkeypatch, plat, case):
     assert update == {"current_version": current, "latest_version": candidate if case == "matching" else current,
                       "update_available": case == "matching"}
     assert api.check_for_update(browser_version="155.0.1.2", release_channel="stable")["current_version"] == (
-        "154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64") else "151.0.7922.173")
+        "154.0.8037.97" if plat in ("linux-x64", "linux-arm64", "win-x64", "win-arm64") else "151.0.7922.173")
 
 
 def test_explicit_missing_release_never_falls_back(cache, monkeypatch):

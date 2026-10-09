@@ -463,6 +463,13 @@ regional settings; omit them for a native-persona comparison. `noise=false`
 keeps identity seeds and disables existing perturbation paths, not four new
 Canvas/WebGL/audio/client-rect noise implementations.
 
+The SDK accepts and validates new noise parameters such as
+`--fingerprint-pixel-noise=seeded`, but SDK parameter support does not mean the
+released browser binary implements them. The Windows ARM64 `v154.0.8037.97`
+bundle reused for this release is the existing 216-patch build; it does not
+include the new pixel-noise implementation. Upgrading the SDK or selecting this
+channel does not enable it; a browser rebuilt with the matching new patches is required.
+
 Ordinary launches now default to `--fingerprint-gpu-backend=native`; explicit
 WebGL name hints require `compatibility`. The SDK no longer injects
 `--ignore-gpu-blocklist`. Optional `--fingerprint-audio-render=isolated` uses
@@ -539,14 +546,14 @@ Channel tags are built into the installed SDK and resolved independently by plat
 | Linux x64 | `v154.0.8037.97` | `v154.0.8037.97` |
 | Linux arm64 | `v154.0.8037.97` | `v154.0.8037.97` |
 | Windows x64 | `v154.0.8037.97` | `v154.0.8037.97` |
-| Windows arm64 | `v151.0.7922.173` | `v152.0.7977.75` |
+| Windows arm64 | `v154.0.8037.97` | `v154.0.8037.97` |
 | macOS x64 / arm64 | `v151.0.7922.173` | `v152.0.7977.75` |
 
-Linux x64/arm64 and Windows x64 have published Chromium 154 assets in this rollout.
-Windows arm64 and macOS retain their prior channel mappings; `latest` does not mean GitHub's
+Linux x64/arm64 and Windows x64/arm64 select Chromium 154 assets in this rollout.
+macOS retains its prior channel mappings; `latest` does not mean GitHub's
 globally newest release. Major `151` still selects `v151.0.7922.173`, and `152`
-selects `v152.0.7977.75`, including on Linux x64/arm64 and Windows x64. Major `154` is
-available only on Linux x64/arm64 and Windows x64. A full version such as `154.0.8037.97`
+selects `v152.0.7977.75`, including on Linux x64/arm64 and Windows x64/arm64. Major `154` is
+available only on Linux x64/arm64 and Windows x64/arm64. A full version such as `154.0.8037.97`
 or `v154.0.8037.97` pins that exact release tag on any platform: it never substitutes the channel's patch
 version. Explicit pins require a published asset for that platform (or a complete
 cached bundle); missing assets fail without falling back to another version.
@@ -566,7 +573,7 @@ or change the built-in channel mapping.
 
 ### Upgrade from this checkout
 
-This checkout uses SDK package version `152.0.7977.82.post3` with the mappings above.
+This checkout uses SDK package version `152.0.7977.82.post4` with the mappings above.
 An already installed registry package does not acquire these mappings automatically.
 From the repository root,
 install the updated Python SDK with `python -m pip install --upgrade ./sdk/python`,
