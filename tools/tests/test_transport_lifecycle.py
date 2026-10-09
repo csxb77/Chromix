@@ -422,7 +422,9 @@ def test_quic_historical_rtt_digest_changes_do_not_invent_a_value(length):
 
 
 @pytest.mark.parametrize('payload', [b'', b'\x40', b'\x80\0', b'\xc0\0\0\0',
-    b'\0\0', b'\x40\0\0\0', b'\xc0' + b'\0' * 8, b'x' * 65537])
+    b'\0\0', b'\x40\0\0\0', b'\xc0' + b'\0' * 8, b'x' * 65537],
+    ids=['empty', 'truncated-two-byte', 'truncated-four-byte', 'truncated-eight-byte',
+         'trailing-one-byte', 'trailing-two-byte', 'trailing-eight-byte', 'oversized'])
 def test_quic_malformed_rtt_wire_is_not_excluded(payload):
     with pytest.raises(ValueError):
         quic_rtt_report(payload)
